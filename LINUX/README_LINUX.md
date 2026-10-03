@@ -85,6 +85,16 @@ the inspector before capture. No extra Linux dependency is required.
 python LINUX/run_linux.py [--now] [--debug] [--diag] [--record] [--dev] [--config PATH]
 ```
 
+The terminal now uses the same setup questions as Windows: NPC/fish-only mode,
+purchase amount, rod slot, sell interval, starting bait count, and preparation
+confirmation. The starting bait count belongs to the current session and is not
+read from calibration. Leaving it blank disables automatic restocking. Answers
+do not overwrite the saved Linux configuration.
+
+`--now` skips the hotkey wait **after setup**, not the setup questions or ready
+confirmation, matching Windows. Canceling setup closes the input/capture
+resources without starting a worker or registering hotkeys.
+
 Terminal controls remain intentionally conventional:
 
 - `F2` — start / stop
@@ -114,8 +124,9 @@ When F2 starts, the X11 backend raises and focuses the detected Sober window and
 confirms focus before sending input. If focus cannot be confirmed, the macro
 warns rather than assuming injected input reached Roblox.
 
-Sober uses the same interaction safeguards as Windows. Enable Roblox's **Shift
-Lock Switch**, leave the current lock off before F2, and let the macro change
+For automatic buying or selling, Sober uses the same interaction safeguards as
+Windows. Enable Roblox's **Shift Lock Switch**, leave the current lock off before
+F2, and let the macro change
 it for dialogue/fishing phases. Before a cast it requires the X11 cursor to
 have actually snapped to the game window's centre; otherwise it stops instead of
 fishing with a free cursor. A dialogue is accepted only when its visible action
@@ -129,6 +140,28 @@ positions. If you used that workaround, recalibrate Interact to the real prompt.
 Failed starts now return to idle, allowing another F2 attempt. Leave the current
 lock off before retrying. Cursor-query failures stop verification; the diagnostic
 message includes the before/after positions, expected centre, and tolerance.
+
+## Fish-only mode (no NPC required)
+
+Select **Don't buy** in Setup to disable automatic buying and selling, even if
+a sell interval was previously saved. No NPC anchor, dialogue detection,
+movement, recovery clicks, or automatic Shift Lock toggle/check runs in this
+mode. Blank bait tracking with **Sell every 0** has the same result. If selling
+is still enabled on the Fisherman route, NPC preparation remains necessary.
+
+Choose your fishing position, camera, and cursor/Shift Lock state yourself before
+F2. Stay outside NPC interaction range and close menus. The fishing detectors,
+rod flick, chest handling, F2/F4/F8, and watchdog remain active. A low bait count
+does not re-enable buying; prepare resources yourself.
+
+For terminal runs, answer **N** to the NPC question for fish-only mode. The
+shared engine also understands `shop.npc` set to `"none"`, `"off"`, or `""` in
+the active Linux profile. Terminal answers take precedence for that session;
+existing saved calibration is preserved. The independent Linux config/assets
+and X11/uinput preflight are unchanged.
+
+If a persistent recipe **Learn** note appears, fish-only mode stops so you can
+clear it manually and restore your aim before F2, without a blind Shift toggle.
 
 ## Privacy and bug reports
 

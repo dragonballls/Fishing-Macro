@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The full GUI on Linux (Sober / X11).
 
-Identical to Windows ``easy_run.py`` — the setup wizard, Calibrate controls,
-the colour eyedropper, the Zone track box, the Advanced cooldowns editor,
-F2/F4 hotkeys — but driving the uinput + X11 backend. The GUI code and the whole
+Identical to Windows ``easy_run.py``: Setup, Calibrate with read-only zoom and
+the color eyedropper, Preparation Guide, Run Console, Advanced cooldowns, and
+F2/F4/F8 controls, but driving the uinput + X11 backend. The GUI code and the whole
 detection/control core are the shared ones; only the input/window layer differs.
 
     python LINUX/easy_run_linux.py

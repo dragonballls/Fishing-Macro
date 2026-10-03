@@ -28,106 +28,16 @@ if not ensure_requirements():
 
 from bloxfish.config import Config                  # noqa: E402
 from bloxfish.engine import FishingEngine           # noqa: E402
+from bloxfish.terminal_setup import ask_input, setup_prompts  # noqa: E402
 
 
 def _ask(prompt: str, default: str = "") -> str:
-    try:
-        return input(prompt).strip()
-    except (EOFError, KeyboardInterrupt):
-        return default
+    return ask_input(prompt, default)
 
 
 def _setup_prompts(cfg, engine) -> bool:
-    """Collect the run settings and show the pre-flight checklist.
-
-    Returns False if the user backed out.
-    """
-    shop = cfg.shop
-
-    # --- which NPC ------------------------------------------------------
-    while True:
-        ans = _ask("Which NPC will you buy from?  [F]isherman "
-                   "(Enter = Fisherman, or N for no buying): ", "f").lower()
-        if ans in ("", "f", "fisherman"):
-            shop.npc = "fisherman"
-            break
-        if ans in ("n", "no", "none"):
-            shop.npc = "none"
-            break
-        print("  please answer F, A, or N")
-
-    # --- how much bait per purchase -------------------------------------
-    if shop.npc == "fisherman":
-        step = max(1, shop.craft_step)
-        while True:
-            raw = _ask(f"How much bait per purchase? (multiple of {step}, "
-                       f"Enter = {shop.bait_per_purchase}): ")
-            if not raw:
-                break
-            if raw.isdigit() and int(raw) >= step and int(raw) % step == 0:
-                shop.bait_per_purchase = int(raw)
-                break
-            print(f"  must be a multiple of {step} and at least {step}")
-        clicks = (shop.bait_per_purchase // step) - 1
-        print(f"  -> {shop.bait_per_purchase} bait per trip "
-              f"({clicks} '+' click{'s' if clicks != 1 else ''} in the craft window)")
-
-    # --- fishing rod hotbar slot -----------------------------------------
-    if shop.npc == "fisherman":
-        while True:
-            raw = _ask(f"Which hotbar slot is your fishing rod in? 1-9 or 0 "
-                       f"(Enter = {cfg.rod_slot}): ")
-            if not raw:
-                break
-            if raw in [str(d) for d in range(10)]:
-                cfg.rod_slot = raw
-                break
-            print("  must be a single digit 1-9 or 0")
-        print(f"  -> will press '{cfg.rod_slot}' to stow/draw the rod")
-
-    # --- auto-sell --------------------------------------------------------
-    if shop.npc == "fisherman":
-        while True:
-            raw = _ask(f"Sell your fish every how many catches? 0 = never "
-                       f"(Enter = {cfg.sell.every}): ")
-            if not raw:
-                break
-            if raw.isdigit():
-                cfg.sell.every = int(raw)
-                cfg.sell.enabled = cfg.sell.every > 0
-                break
-            print("  must be a whole number (0 to disable)")
-        print(f"  -> {'selling every %d catches' % cfg.sell.every}"
-              if cfg.sell.enabled else "  -> auto-sell off")
-
-    # --- current bait ----------------------------------------------------
-    raw = _ask("How much bait do you have right now? (Enter to skip tracking) ")
-    engine.bait_count = int(raw) if raw.isdigit() else None
-    if engine.bait_count is None:
-        print("  bait tracking off — the bot will never stop to buy")
-    else:
-        print(f"  tracking {engine.bait_count}; will restock at "
-              f"{shop.buy_at}")
-
-    # --- pre-flight checklist -------------------------------------------
-    print("\n" + "=" * 62)
-    print("BEFORE YOU START — get these exactly right or the clicks miss:")
-    print("  1. Stand at the NPC, right on the edge of interaction range")
-    print("     (the 'Interact' prompt should be showing).")
-    print("  2. Turn OFF auto-run / running.")
-    print("  3. Turn OFF shift lock — the bot switches it on itself.")
-    print("  4. Leave Roblox focused and don't touch the mouse while it runs.")
-    print("  5. Don't let your editor/terminal overlap the game window — the")
-    print("     bot reads the screen, and a covered panel reads as 'not there'.")
-    print(f"  6. EQUIP your fishing rod now (slot {cfg.rod_slot}) and leave it out.")
-    print("     The bot stows and re-draws it around each bait trip, which is")
-    print("     what clears the post-catch stuck state.")
-    print("=" * 62)
-    ans = _ask("Ready? [Enter to continue, N to quit] ", "n").lower()
-    if ans in ("n", "no", "q", "quit"):
-        print("aborted")
-        return False
-    return True
+    """Use the same terminal setup as Linux, preserving the launcher hooks."""
+    return setup_prompts(cfg, engine, ask=_ask)
 
 
 def main() -> int:

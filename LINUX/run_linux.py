@@ -107,6 +107,7 @@ def main() -> int:
 
     import bloxfish.engine as E
     from bloxfish.config import CONFIG_PATH, Config
+    from bloxfish.terminal_setup import setup_prompts
 
     cfg = Config.load()
     cfg.debug = args.debug or cfg.debug
@@ -133,6 +134,17 @@ def main() -> int:
         log(f"[dev] capturing Sober diagnostics to {capture}")
 
     engine = E.FishingEngine(cfg, log=log)
+    # The starting bait count is session state, not a saved config field.
+    # Without the shared setup, terminal runs always left it as None and could
+    # never restock. --now skips the hotkey wait, not these safety questions,
+    # matching the Windows terminal runner.
+    if not setup_prompts(cfg, engine):
+        try:
+            engine.close()
+        finally:
+            if logfile is not None:
+                logfile.close()
+        return 0
     _install_hotkeys._eng = engine
 
     worker = {"t": None}
@@ -170,7 +182,8 @@ def main() -> int:
         pass
     finally:
         stop()
-        time.sleep(0.2)
+        if worker["t"] and worker["t"].is_alive():
+            worker["t"].join(timeout=3.0)
         try:
             engine.close()
         except Exception:                              # noqa: BLE001

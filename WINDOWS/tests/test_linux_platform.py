@@ -78,6 +78,125 @@ class LinuxProfileTests(unittest.TestCase):
             self.assertEqual(output, Path(td) / "diag")
             self.assertTrue(output.is_dir())
 
+    def test_linux_imports_current_shared_gui_fixes_with_its_own_profile(self) -> None:
+        code = (
+            "import sys,json; sys.path.insert(0,sys.argv[1]); "
+            "from linux_runtime import configure_linux_runtime; configure_linux_runtime(); "
+            "import easy_run; from bloxfish import config,engine,shop,vision,routes,terminal_setup; "
+            "print(json.dumps({'gui':easy_run.__file__,'version':config.VERSION,"
+            "'assets':str(easy_run.ASSETS),'config':str(config.CONFIG_PATH),"
+            "'modules':[m.__file__ for m in (engine,shop,vision,routes,terminal_setup)]}))"
+        )
+        result = subprocess.run([sys.executable, '-B', '-c', code, str(LINUX)],
+                                capture_output=True, text=True, check=True)
+        report = json.loads(result.stdout)
+        from bloxfish.config import VERSION
+        self.assertEqual(report['version'], VERSION)
+        self.assertEqual(Path(report['gui']), WINDOWS / 'easy_run.py')
+        self.assertEqual(Path(report['assets']), LINUX / 'assets' / 'gui')
+        self.assertEqual(Path(report['config']), LINUX / 'config.json')
+        for source in report['modules']:
+            self.assertEqual(Path(source).parent, WINDOWS / 'bloxfish')
+
+
+class LinuxTerminalSetupTests(unittest.TestCase):
+    """Exercise the real launcher and shared prompts with fake game devices."""
+
+    def launch(self, replies, *, dev=False, live_worker=False):
+        import run_linux
+        cfg = Config()
+        engine = SimpleNamespace(cfg=cfg, bait_count=None, running=False,
+                                 safety_stopped=False, run=mock.Mock(),
+                                 stop=mock.Mock(), close=mock.Mock())
+        worker = mock.Mock()
+        worker.is_alive.return_value = live_worker
+        if live_worker:
+            engine.run.side_effect = lambda: setattr(engine, 'running', True)
+        worker.start.side_effect = engine.run
+        native_open = open
+        opened = []
+
+        def tracked_open(*args, **kwargs):
+            file = native_open(*args, **kwargs)
+            opened.append(file)
+            return file
+
+        with tempfile.TemporaryDirectory() as folder:
+            profile = Path(folder) / 'sober.json'
+            argv = ['run_linux.py', '--now', '--config', str(profile)]
+            if dev:
+                argv.append('--dev')
+            with mock.patch.object(run_linux.sys, 'platform', 'linux'), \
+                    mock.patch.object(run_linux.sys, 'argv', argv), \
+                    mock.patch('linux_runtime.configure_linux_runtime') as context, \
+                    mock.patch('preflight_linux.run_preflight', return_value=True), \
+                    mock.patch.object(run_linux, '_patch_backends'), \
+                    mock.patch('bloxfish.config.CONFIG_PATH', profile), \
+                    mock.patch.object(Config, 'load', return_value=cfg), \
+                    mock.patch.object(Config, 'save') as save, \
+                    mock.patch.object(engine_mod, 'FishingEngine', return_value=engine), \
+                    mock.patch.object(run_linux.threading, 'Thread', return_value=worker), \
+                    mock.patch.object(run_linux.time, 'sleep',
+                                      side_effect=KeyboardInterrupt if live_worker else None), \
+                    mock.patch.object(run_linux, '_install_hotkeys') as hotkeys, \
+                    mock.patch('builtins.open', side_effect=tracked_open), \
+                    mock.patch('builtins.input', side_effect=replies), \
+                    mock.patch('builtins.print') as output:
+                result = run_linux.main()
+                context.assert_called_once_with(str(profile))
+                save.assert_not_called()
+                hotkeys.assert_not_called()  # --now still requires setup
+                lines = '\n'.join(str(call.args[0]) for call in output.call_args_list if call.args)
+            captures = list(Path(folder).glob('capture_*/run.log'))
+            if dev:
+                self.assertEqual(len(captures), 1)
+                self.assertFalse(profile.exists())  # no configuration writes
+                self.assertEqual(len(opened), 1)
+                self.assertTrue(opened[0].closed)
+        self.assertEqual(result, 0)
+        engine.close.assert_called_once()
+        return cfg, engine, worker, lines
+
+    def test_fish_only_answers_reach_linux_engine_before_now_start(self) -> None:
+        cfg, engine, worker, lines = self.launch(['n', '5', '80', ''])
+        from bloxfish.routes import npc_route_enabled
+        self.assertEqual(cfg.shop.npc, 'none')
+        self.assertEqual(cfg.rod_slot, '5')
+        self.assertEqual(engine.bait_count, 80)
+        self.assertFalse(npc_route_enabled(cfg, engine.bait_count))
+        engine.run.assert_called_once()
+        worker.start.assert_called_once()
+        self.assertIn('Fish-only: choose your fishing position', lines)
+        self.assertNotIn('will restock at', lines)
+
+    def test_linux_buying_gets_the_initial_bait_count_and_purchase_settings(self) -> None:
+        cfg, engine, _worker, lines = self.launch(['f', '90', '5', '0', '80', ''])
+        from bloxfish.routes import buying_enabled, selling_enabled
+        self.assertEqual(cfg.shop.bait_per_purchase, 90)
+        self.assertEqual(engine.bait_count, 80)
+        self.assertTrue(buying_enabled(cfg, engine.bait_count))
+        self.assertFalse(selling_enabled(cfg))
+        engine.run.assert_called_once()
+        self.assertIn('will restock at', lines)
+
+    def test_blank_count_with_no_selling_is_manual_fishing_on_linux(self) -> None:
+        cfg, engine, _worker, lines = self.launch(['f', '', '5', '0', '', ''])
+        from bloxfish.routes import npc_route_enabled
+        self.assertIsNone(engine.bait_count)
+        self.assertFalse(npc_route_enabled(cfg, engine.bait_count))
+        self.assertIn('No automatic toggles or checks', lines)
+
+    def test_linux_setup_abort_closes_resources_without_arming_input(self) -> None:
+        _cfg, engine, worker, _lines = self.launch(['n', '5', '80', 'n'], dev=True)
+        engine.run.assert_not_called()
+        engine.stop.assert_not_called()
+        worker.start.assert_not_called()
+
+    def test_linux_terminal_waits_for_the_worker_before_closing_devices(self) -> None:
+        _cfg, engine, worker, _lines = self.launch(['n', '5', '80', ''], live_worker=True)
+        engine.stop.assert_called_once()
+        worker.join.assert_called_once_with(timeout=3.0)
+
 
 class LinuxPreflightTests(unittest.TestCase):
     @staticmethod

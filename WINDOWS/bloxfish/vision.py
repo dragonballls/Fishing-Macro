@@ -796,9 +796,9 @@ def _find_menu_panels(img: np.ndarray) -> list[MenuButton]:
     White text alone is a weak row signal: the mouse cursor over the water can
     become a fake first row, and individual glyph strokes can form an evenly
     spaced three-row pattern. The actual action panels are much more stable —
-    wide dark bands with a fixed button height. Prefer those whenever they are
-    visible, while retaining the label detector below as a compatibility
-    fallback for older UI themes and calibration previews.
+    wide dark bands with a fixed button height. These centres remain useful
+    when label detection finds no fuller stack; translucent backing can make
+    only some panels separable, so they are not an early-return page proof.
     """
     h, w = img.shape[:2]
     if h < 30 or w < 60:
@@ -838,11 +838,11 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
     retain only two or more evenly-spaced rows in the lower-right UI region.
     This is intentionally a *positive* detector: uncertain frames return an
     empty list, letting the legacy calibrated targets remain the fallback.
+    Compare dark panels with backed white labels so a partially merged panel
+    scan cannot hide the complete root page.
     """
     h, w = img.shape[:2]
     panels = _find_menu_panels(img)
-    if panels:
-        return panels
     # The normal desktop UI is lower-right, but the supplied Update 30 footage
     # proves that Roblox's UI scale can make the exact same stack fill most of
     # the screen.  Scan the full possible panel region, then reject short
@@ -850,12 +850,23 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
     x0, x1 = int(w * 0.10), int(w * 0.98)
     y0, y1 = int(h * 0.02), int(h * 0.99)
     if x1 - x0 < 40 or y1 - y0 < 40:
-        return []
+        return panels
 
     b, g, r = _split(img[y0:y1, x0:x1])
     # Label/icon white stays bright even though the menu panels themselves are
     # semi-transparent and take on whatever colour is behind the NPC.
     white = (b > 185) & (g > 185) & (r > 185)
+    # Bright sky/water beyond a fading translucent panel can join several
+    # labels into one long band. Retain white with nearby dark panel/letter
+    # backing instead of projecting every bright background pixel into rows.
+    gray = cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    dark = gray < 90
+    dark_support = cv2.boxFilter(dark.astype(np.float32), -1, (35, 35))
+    # A bright border just outside a panel has dark support on only one side.
+    # Actual label pixels sit between dark backing on their own scanline.
+    enclosed = (np.maximum.accumulate(dark, axis=1) &
+                np.maximum.accumulate(dark[:, ::-1], axis=1)[:, ::-1])
+    white &= (dark_support >= 0.30) & enclosed
     counts = white.sum(axis=1)
     active = (counts >= max(7, int((x1 - x0) * 0.004))).astype(np.uint8)
     # Text has holes between glyphs. Join those vertically, but not separate
@@ -865,6 +876,7 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
                               np.ones((join, 1), np.uint8))[:, 0].astype(bool)
 
     bands: list[MenuButton] = []
+    band_pixels: list[tuple[np.ndarray, np.ndarray]] = []
     start = None
     min_white = max(80, int(h * w * 0.00012))
     for i, on in enumerate(np.r_[active, False]):
@@ -872,7 +884,9 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
             start = i
         elif not on and start is not None:
             end = i
-            if h * 0.008 <= end - start <= h * 0.16:
+            # A pointer over the last label extends its white band slightly.
+            # Keep it eligible; regular row spacing below remains required.
+            if h * 0.008 <= end - start <= h * 0.20:
                 ys, xs = np.where(white[start:end])
                 # A player-list row can be white and evenly spaced too, but
                 # it is much narrower than even the shortest NPC action. This
@@ -886,10 +900,11 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
                         x=float(x0 + np.median(xs)),
                         y=float(y0 + start + np.median(ys)),
                     ))
+                    band_pixels.append((x0 + xs, y0 + start + ys))
             start = None
 
     if len(bands) < 2:
-        return []
+        return panels
     # Keep the longest run with *consistent* button spacing. A calibration or
     # debug overlay can paint a wide white label immediately above the menu;
     # accepting it as a fifth row shifts every live click by one. The real NPC
@@ -898,14 +913,31 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
     min_gap, max_gap = h * 0.035, h * 0.34
     for first in range(len(bands) - 1):
         for last in range(first + 2, len(bands) + 1):
-            candidate = bands[first:last]
+            # A bright piece of backdrop can join a label's vertical band and
+            # pull its raw median far sideways. Recover label pixels near the
+            # common column of the other rows, then validate the refined stack.
+            anchor = float(np.median([band.x for band in bands[first:last]]))
+            candidate = []
+            for xs, ys in band_pixels[first:last]:
+                keep = np.abs(xs - anchor) <= w * 0.30
+                if (keep.sum() < min_white or
+                        np.ptp(xs[keep]) + 1 < max(30, int(w * 0.06))):
+                    continue  # unrelated highlight between genuine label rows
+                candidate.append(MenuButton(float(np.median(xs[keep])),
+                                             float(np.median(ys[keep]))))
+            if len(candidate) < 2:
+                continue
             gaps = [b.y - a.y for a, b in zip(candidate, candidate[1:])]
             if (any(gap < min_gap or gap > max_gap for gap in gaps)
                     or max(gaps) > min(gaps) * 1.35):
                 continue
             if len(candidate) > len(best):
                 best = candidate
-    return best if len(best) >= 2 else []
+    # Transparent panels over a dark dock can merge at their edges, leaving
+    # only two plausible bands on a four-row root menu (issue #38). Compare
+    # both witnesses before accepting that partial scan. A fuller, regularly
+    # spaced label stack wins; otherwise keep the stable panel centres.
+    return best if len(best) > len(panels) and len(best) >= 2 else panels
 
 def menu_button_count(img: np.ndarray) -> int:
     """Number of NPC dialogue buttons visible in `img` (a grab of the menu ROI).

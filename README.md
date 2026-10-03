@@ -21,13 +21,19 @@ Everything you need on Windows. Download this repository (green **Code** button 
 Full setup, calibration, options, and troubleshooting are in
 **[`WINDOWS/README.md`](WINDOWS/README.md)**.
 
-> **If your browser or antivirus warns about the download — it's a false
-> positive.** To play the minigame the macro sends mouse/keyboard input and reads
-> the screen, the same behaviour a keylogger has, so heuristic scanners sometimes
-> flag it. There are **no opaque binaries or Windows executables here**; the
-> macro itself is readable Python you can inspect line by line. The Linux setup
-> also includes two short, readable shell/rules files. See `WINDOWS/README.md`
-> for details.
+**Want to fish without an NPC?** Select **Don't buy** in Setup. Fish-only mode
+skips automatic buying/selling, NPC dialogue/movement, and Shift Lock checks.
+Choose your fishing spot, aim, and Shift Lock state yourself before F2. Fishing
+detectors and the safety watchdog remain active. This mode is shared by Windows
+and Linux/Sober.
+
+> **Do not assume an antivirus or download warning is a false positive.**
+> Screen capture and automated input can attract heuristic warnings, but that
+> does not establish the cause of a particular alert. Download from this
+> repository and inspect the source and the warning before allowing anything.
+> The macro is readable Python, with no bundled Windows executable; Linux also
+> includes readable setup shell/rules files. Python dependencies are installed
+> separately. See `WINDOWS/README.md` for details.
 
 ## 🐧 [`LINUX/`](LINUX/README_LINUX.md) — experimental (Sober)
 

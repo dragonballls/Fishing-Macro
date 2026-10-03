@@ -23,15 +23,13 @@ than by fixed timings, so it adapts to different rods, lighting and times of day
 That's it. The first launch installs what it needs (about a minute) and then
 opens a window that walks you through the rest.
 
-> **If your browser or antivirus warns about the download — it's a false
-> positive.** To play the minigame the macro sends mouse/keyboard input to the
-> game and reads the screen; that's the same behaviour a keylogger has, so
-> heuristic scanners sometimes flag it on sight. There are **no opaque binaries
-> or Windows executables here**; the macro itself is readable Python you can
-> inspect line by line. Choose *Keep* / *More info → Run anyway*, or just run
-> `python easy_run.py` from a terminal. (A fresh release is also a brand-new
-> file with no download history, which trips "uncommon download" warnings until
-> enough people have it.)
+> **Do not assume an antivirus or download warning is a false positive.**
+> Screen capture and automated input can attract heuristic warnings, and a new
+> download can lack an established reputation. Neither explanation proves why
+> your particular file was flagged. Download from the official repository,
+> inspect the source and alert, and do not disable security protection or
+> bypass a warning you have not understood. The macro is readable Python, with
+> no bundled Windows executable; Python dependencies are installed separately.
 
 If double-clicking opens the file in a text editor instead of running it, open a
 terminal in the folder and run:
@@ -62,10 +60,14 @@ clicks land on nothing. The app shows this list too.
    catches, and `F2`/`F4` do nothing. Open PowerShell or Windows Terminal with
    **Run as administrator**, change to this `WINDOWS` folder, then run
    `python easy_run.py`.
-2. **Stand at the NPC**, right on the edge of interaction range — the
-   `Interact` prompt should be showing.
+2. **For automatic NPC buying or selling:** stand at the NPC, right on the
+   edge of interaction range. The `Interact` prompt should be showing.
+   **For fish-only mode:** choose your fishing position and aim yourself,
+   outside NPC interaction range. No NPC dialogue is required.
 3. **Turn OFF auto-run / running.**
-4. **Turn OFF shift lock** — the bot switches it on itself and tracks the state.
+4. **For NPC routes, turn OFF Shift Lock** before starting; the macro manages
+   and verifies it. **In fish-only mode, set Shift Lock yourself.** The macro
+   neither toggles nor verifies it, including before casts.
 5. **Leave Roblox focused** and don't touch the mouse while it runs.
 6. **Don't let another window overlap the game.** The bot reads the screen; a
    covered panel reads as "not there".
@@ -81,7 +83,10 @@ Two more things that matter, because of how the bite marker is detected:
   push the marker outside the area the bot watches — fixable with **Calibrate
   controls** (below).
 
-`F2` starts and stops, `F4` quits, and `F8` toggles the diagnostic log/overlay.
+In the **GUI Run Console**, `F2` starts/pauses, `F4` stops the run without closing
+the application, and `F8` shows/hides hitboxes and writes a diagnostic log.
+In the **terminal runner**, `F2` starts/stops, `F4` quits, and `F8` toggles the
+diagnostic log only.
 If the main hotkeys do not work, the window has buttons that do the same thing
 (a global hotkey needs administrator rights on Windows).
 
@@ -305,7 +310,7 @@ Reset removes an override so a future code update can supply its new default.
 
 | Option | What it does |
 |---|---|
-| **NPC** | Fisherman, or "don't buy" to fish on the bait you have. |
+| **NPC** | Fisherman, or "Don't buy" for fish-only mode: no buying, selling, NPC anchoring/movement, or automatic Shift Lock checks. |
 | **Bait per purchase** | How much to buy per trip (multiples of 10). |
 | **Rod hotbar slot** | Which key stows/draws your rod. |
 | **Sell every N catches** | 0 turns auto-selling off. The NPC never buys favourited fish or your heaviest. |
@@ -313,11 +318,32 @@ Reset removes an override so a future code update can supply its new default.
 | **Slower fish trick** | Turn on if you end up holding a glitched fish. Slower per catch, but avoids it. |
 | **Faster bite reaction** | Reacts in ~7 ms instead of ~80 ms. Uses more CPU, and can occasionally react to a false marker. |
 
+### Fish without an NPC
+
+Select **Don't buy** to fish with your existing resources from your chosen
+position. A saved sell interval is ignored in this mode, not erased. Selecting
+Fisherman again restores that choice. Blank bait tracking plus **Sell every 0**
+also selects fish-only behavior. If automatic selling remains enabled on the
+Fisherman route, NPC positioning and Shift Lock verification still apply.
+
+Fish-only mode keeps casting, bite/reel detection, the rod flick, chest handling,
+F2/F4/F8, and the safety watchdog. It does not inspect or close NPC menus after
+a failed cast. Close menus and prepare your aim before starting. No bait count
+can trigger a purchase when buying is off. Restocking also stops when the
+purchase amount is non-positive or the session's purchase-failure limit is reached.
+
+If a persistent recipe **Learn** note is detected in fish-only mode, the macro
+stops rather than blindly changing your Shift Lock. Clear the note manually,
+restore your fishing aim/cursor setup, and restart with F2.
+
 ---
 
 ## Troubleshooting
 
 ### Shift Lock could not be verified
+
+This verification applies only to an active automatic NPC route. Fish-only
+mode does not require the cursor-snap test.
 
 Update to the latest build before changing calibration. Older builds incorrectly
 used the saved **Interact click point** (`shop.center`) to check the locked cursor.

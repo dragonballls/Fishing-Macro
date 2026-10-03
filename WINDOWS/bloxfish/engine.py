@@ -20,6 +20,7 @@ from .config import Config, VERSION
 from .controller import ReelController
 from .inputs import Keyboard, Mouse, valid_slot
 from . import shop as shop_mod
+from .routes import buying_enabled, npc_route_enabled, selling_enabled
 from .vision import (
     BarGeometry, charge_meter_score, find_bar, find_bar_by_strip,
     find_bite_marker, progress_bar_present, read_bar, read_progress,
@@ -539,11 +540,15 @@ class FishingEngine:
         and try again. A swallowed press simply dismisses whatever ate it, so
         the next attempt casts cleanly. Returns True once a cast is confirmed.
         """
-        # The cursor must be locked for every cast. A failed Shift Lock toggle
+        # Automatic NPC routes require a locked cursor for every cast.
+        # Fish-only sessions keep the user's cursor/Shift Lock setup untouched.
+        # A failed Shift Lock toggle
         # used to leave this internal state as "on" and let the bot fish with a
         # free cursor; supported runtimes now stop before that unsafe,
         # mis-aimed cast.
-        if (shop_mod.interaction_safety_guard()
+        if (npc_route_enabled(self.cfg, getattr(self, "bait_count", None),
+                              getattr(self, "_buy_failures", 0))
+                and shop_mod.interaction_safety_guard()
                 and not shop_mod.fishing_shift_lock_ready(self)):
             self.log("[cast] Shift Lock is not confirmed — stopping before a "
                      "free-cursor cast")
@@ -599,7 +604,8 @@ class FishingEngine:
             # The costly case is being inside the NPC's radius, where the click
             # talks to him instead: retrying then just re-opens the dialogue
             # forever. Close it and step out before trying again.
-            if shop_mod.escape_dialogue(self):
+            if (npc_route_enabled(self.cfg, self.bait_count, self._buy_failures)
+                    and shop_mod.escape_dialogue(self)):
                 continue
             # Say what was actually seen. "No charge" has two very different
             # causes and the number tells them apart: a peak near zero means
@@ -1028,7 +1034,8 @@ class FishingEngine:
             return
         self.bait_count = max(0, self.bait_count - 1)
         n = self.bait_count
-        if n <= self.cfg.shop.buy_at:
+        if (buying_enabled(self.cfg, self.bait_count, self._buy_failures)
+                and n <= self.cfg.shop.buy_at):
             self.log(f"[bait] {n} left — buying at {self.cfg.shop.buy_at}")
         elif n <= self.cfg.low_bait_warn:
             self.log(f"[bait] {n} left (low)")
@@ -1036,7 +1043,7 @@ class FishingEngine:
             self.log(f"[bait] {n} left")
 
     def _needs_bait(self) -> bool:
-        return (self.bait_count is not None
+        return (buying_enabled(self.cfg, self.bait_count, self._buy_failures)
                 and self.bait_count <= self.cfg.shop.buy_at)
 
     def _wait_bar_clear(self) -> None:
@@ -1059,6 +1066,8 @@ class FishingEngine:
         """Top the bait back up. Runs the mapped NPC dialogue, then returns to
         fishing stance. A failure here is logged, not fatal — the loop keeps
         fishing on whatever bait is left."""
+        if not buying_enabled(self.cfg, self.bait_count, self._buy_failures):
+            return
         cfg = self.cfg.shop
         amount = cfg.bait_per_purchase
         try:
@@ -1089,12 +1098,13 @@ class FishingEngine:
 
     def _needs_sell(self) -> bool:
         s = self.cfg.sell
-        return (s.enabled and s.every > 0 and self._since_sell >= s.every
-                and self.cfg.shop.npc.lower().startswith("f"))
+        return selling_enabled(self.cfg) and self._since_sell >= s.every
 
     def _sell_fish(self, *, stay_at_npc: bool = False) -> bool:
         """Empty the fish stock at the NPC. Never fatal: a failed sale just
         means we keep fishing with a fuller inventory."""
+        if not selling_enabled(self.cfg):
+            return False
         try:
             ok = shop_mod.sell(self, stay_at_npc=stay_at_npc)
         except shop_mod.ShopError as exc:
@@ -1150,10 +1160,12 @@ class FishingEngine:
         # resetting only ``started`` made a stop/start report old catches over
         # the new, shorter time window and could produce absurd fish/min rates.
         self.stats = Stats()
-        # The user is told to start inside the NPC's range with shift lock OFF.
+        uses_npc = npc_route_enabled(self.cfg, getattr(self, "bait_count", None))
+        # NPC routes start inside interaction range with Shift Lock OFF.
+        # Fish-only runs do not claim an NPC position or toggle the user's lock.
         # Both are tracked as state: the confirmed NPC dialogue establishes the
         # pushed fishing position, and shift lock is then restored for casts.
-        self._at_npc = True
+        self._at_npc = uses_npc
         self._npc_repositioned = False
         self._shift_lock = False
         self._shift_lock_verified = False
@@ -1165,13 +1177,17 @@ class FishingEngine:
         # Establish a known fishing position through one real NPC dialogue.
         # This replaces the old F2 W movement, which was geometrically unstable
         # after Roblox pushed the character to a new point on the NPC radius.
-        if self.cfg.shop.enter_stance_on_start:
+        if not uses_npc:
+            self.log("[start] fish-only mode: no automatic buying or selling; "
+                     "skipping NPC dialogue, positioning, and Shift Lock checks. "
+                     "Keep your chosen fishing aim and cursor setup unchanged.")
+        elif self.cfg.shop.enter_stance_on_start:
             if not shop_mod.establish_fishing_anchor(self):
                 self.stop()
                 return
         elif shop_mod.interaction_safety_guard():
-            # This legacy opt-out skips the NPC anchor, not the fundamental
-            # fishing requirement. The active backend still has to establish
+            # This legacy opt-out skips the NPC anchor, not an active NPC
+            # route's cursor requirement. The backend still has to establish
             # Shift Lock before it can make a centre-screen cast.
             if not shop_mod.enter_fishing_stance(self):
                 self.stop()

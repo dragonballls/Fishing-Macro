@@ -23,6 +23,8 @@ import subprocess
 import sys
 import threading
 import time
+import tkinter as tk
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -87,6 +89,7 @@ except ImportError:                                # noqa: BLE001
 from bloxfish.config import Config, COOLDOWNS, VERSION  # noqa: E402
 from bloxfish.engine import FishingEngine          # noqa: E402
 from bloxfish import vision                        # noqa: E402
+from bloxfish.routes import buying_enabled, npc_route_enabled  # noqa: E402
 from image_inspector import ImageInspector         # noqa: E402
 
 try:
@@ -491,8 +494,58 @@ class PreparationItem(ctk.CTkFrame):
         if simulation:
             NPCPositionSimulation(self.body).pack(fill="x", padx=15, pady=(0, 14))
 
+        # Fixed wrap widths can clip warning/success text in small windows.
+        # Resize only when the label's available width changes, in logical CTk
+        # units so the same bound also works with desktop/widget scaling.
+        containers = [self.body] + [
+            child for child in self.body.winfo_children()
+            if isinstance(child, ctk.CTkFrame)
+            and not isinstance(child, NPCPositionSimulation)]
+        self._wrapped_labels = []
+        for container in containers:
+            for label_widget in container.winfo_children():
+                if isinstance(label_widget, ctk.CTkLabel):
+                    limit = int(label_widget.cget("wraplength"))
+                    if limit > 0:
+                        self._wrapped_labels.append(label_widget)
+                        self._bind_text_wrap(label_widget, limit)
+
         if expanded:
             self.toggle(animate=False)
+
+    @staticmethod
+    def _bind_text_wrap(label, limit: int) -> None:
+        target = [None]
+        job = [None]
+
+        def apply():
+            job[0] = None
+            if label.winfo_exists() and int(label.cget("wraplength")) != target[0]:
+                label.configure(wraplength=target[0])
+
+        def fit(event):
+            available = int(label._reverse_widget_scaling(event.width))
+            if available < 120:  # transient 1px geometry during construction
+                return
+            width = min(limit, available - 4)
+            if target[0] == width:
+                return
+            target[0] = width
+            # CTk redraws can dispatch Configure recursively. Coalesce widths
+            # outside that callback instead of configuring synchronously.
+            if job[0] is None:
+                job[0] = label.after(20, apply)
+
+        def cancel(_event):
+            if job[0] is not None:
+                try:
+                    label.after_cancel(job[0])
+                except Exception:
+                    pass
+                job[0] = None
+
+        label.bind("<Configure>", fit, add=True)
+        label.bind("<Destroy>", cancel, add=True)
 
     def toggle(self, animate: bool = True) -> None:
         if self._anim_job is not None:
@@ -1139,7 +1192,11 @@ class Calibrator(ctk.CTkToplevel):
             fg_color=BG_CARD_RAISED, hover_color="#203858", text_color=TEXT,
             state="disabled", command=self._inspect_reference)
         self.zoom_ref_btn.pack(side="left")
-        self.canvas = ctk.CTkCanvas(canvas_shell, bg="#08111f", highlightthickness=0,
+        # CTkCanvas is an internal renderer, not a public editing canvas.
+        # In released CTk 5.2.2 its coords() discards the return value, breaking
+        # hover, dragging, and saving. Native Canvas preserves pixel geometry
+        # across supported CTk versions without patching the installed library.
+        self.canvas = tk.Canvas(canvas_shell, bg="#08111f", highlightthickness=0,
                                     bd=0, cursor="crosshair")
         self.canvas.grid(row=1, column=0, sticky="nsew", padx=6, pady=6)
         self.canvas.bind("<Button-1>", self._down)
@@ -1672,6 +1729,9 @@ class Calibrator(ctk.CTkToplevel):
         return tuple(getattr(obj, f) for f in fields)
 
     def redraw(self) -> None:
+        # A refit/selection/Re-shoot replaces every item. End any in-flight
+        # drag so its old pixel anchor cannot move the new projection.
+        self.drag = None
         self._clear_guides()
         self.canvas.delete("all")
         self.shapes.clear()
@@ -2371,8 +2431,9 @@ class App(ctk.CTk):
         # 1. NPC
         section("Route", "Tell the macro whether this session uses the mapped NPC.")
         c = Card(body, "Which NPC will you buy from?",
-                 "Only the Fisherman is mapped. Pick “Don't buy” to fish on the "
-                 "bait you already have.", "npc", 1)
+                 "Only the Fisherman is mapped. Don't buy is fish-only: no "
+                 "automatic buying, selling, NPC movement, or Shift Lock "
+                 "checks. Choose your fishing position and aim yourself.", "npc", 1)
         self.v_npc = ctk.StringVar(
             value=str(draft.get(
                 "npc", "Fisherman" if self.cfg.shop.npc.lower().startswith("f")
@@ -2431,7 +2492,8 @@ class App(ctk.CTk):
 
         # 5. current bait (optional)
         c = Card(body, "How much bait do you have right now?",
-                 "Optional — leave blank and the bot simply never stops to buy.",
+                 "Optional: blank disables restocking. With Sell every 0, "
+                 "this also skips NPC startup and Shift Lock checks.",
                  "bait_now", 5)
         self.v_bait = ctk.StringVar(value=str(draft.get("bait", "")))
         ctk.CTkEntry(c.body, textvariable=self.v_bait,
@@ -2586,13 +2648,19 @@ class App(ctk.CTk):
         """Reflect the current form values without mutating the configuration."""
         if not hasattr(self, "profile_npc"):
             return
-        self.profile_npc.configure(
-            text="Fisherman route" if self.v_npc.get() == "Fisherman"
-            else "Fish with current bait")
-        self.profile_bait.configure(text=f"{self.v_amount.get()} bait per visit")
         sell = self.v_sell.get()
+        draft = {"npc": self.v_npc.get(), "amount": self.v_amount.get(),
+                 "sell": sell, "bait": self.v_bait.get()}
+        preview, bait = self._route_preview(draft)
+        self.profile_npc.configure(
+            text="Fisherman route" if npc_route_enabled(preview, bait)
+            else "Fish-only / no NPC")
+        self.profile_bait.configure(
+            text=f"{self.v_amount.get()} bait per visit"
+            if buying_enabled(preview, bait) else "Automatic buying off")
         self.profile_cycle.configure(
-            text="Auto-sell off" if sell == "0" else f"Sell every {sell} catch"
+            text="Auto-sell off" if sell == "0" or self.v_npc.get() != "Fisherman"
+            else f"Sell every {sell} catch"
             + ("" if sell == "1" else "es"))
         reaction = "Fast response (higher CPU)" if self.v_fast.get() else "Balanced response"
         if self.v_slow.get():
@@ -2767,7 +2835,26 @@ class App(ctk.CTk):
             self._build_runner()
 
     # -- page 2: the checklist -------------------------------------------
+    def _route_preview(self, draft=None):
+        """Use pending Setup answers for guidance without saving or mutating."""
+        if draft is None:
+            draft = getattr(self, "_form_draft", None)
+        if not draft:
+            return self.cfg, getattr(self, "bait", None)
+        raw_bait = str(draft.get("bait", "")).strip()
+        bait = int(raw_bait) if raw_bait.isdigit() else None
+        sell = int(str(draft.get("sell", 0)))
+        preview = replace(
+            self.cfg,
+            shop=replace(self.cfg.shop,
+                         npc="fisherman" if draft.get("npc") == "Fisherman" else "none",
+                         bait_per_purchase=int(str(draft.get("amount", 90)))),
+            sell=replace(self.cfg.sell, every=sell, enabled=sell > 0))
+        return preview, bait
+
     def _build_checklist(self) -> None:
+        preview, bait = self._route_preview()
+        uses_npc = npc_route_enabled(preview, bait)
         self._page = "checklist"
         for w in self.winfo_children():
             w.destroy()
@@ -2788,7 +2875,8 @@ class App(ctk.CTk):
         ctk.CTkLabel(words, text="Expand each item. Red and orange items protect the start sequence.",
                      text_color=MUTED, anchor="w",
                      font=ctk.CTkFont(size=11)).pack(anchor="w", pady=(2, 0))
-        ctk.CTkLabel(head, text="10 checks  ·  start only when ready", corner_radius=10,
+        ctk.CTkLabel(head, text="NPC route" if uses_npc else "Fish-only / no NPC",
+                     corner_radius=10,
                      fg_color="#0d2238", text_color="#b9d8eb", height=30,
                      font=ctk.CTkFont(size=11, weight="bold")).pack(
                          side="right", padx=16, pady=15)
@@ -2865,7 +2953,7 @@ class App(ctk.CTk):
              "The Calibrate overlays line up with the real game controls, and Save completes without changing unrelated settings.",
              None, False),
             (f"Equip the fishing rod and confirm hotbar slot {self.cfg.rod_slot}", "important",
-             "The macro stows and re-draws the rod around NPC trips to clear the post-catch state. It can only do that if the selected setup slot is the actual fishing rod slot.",
+             "The macro flicks the rod after catches and stows it around enabled NPC trips. The selected hotbar slot must hold the fishing rod, even in fish-only mode.",
              ("Equip the fishing rod before starting.", "Check the visible hotbar slot matches the value chosen in Setup.",
               "If you change rods or rearrange the hotbar, update Setup before the next run."),
              "A wrong slot can leave the macro holding the wrong item, so it cannot re-approach the NPC or clear a caught fish.",
@@ -2910,6 +2998,61 @@ class App(ctk.CTk):
              "Every required check is true. Tick the confirmation below only when you are ready for the macro to control the session.",
              None, False),
         ]
+        if not uses_npc:
+            items[0] = (
+                "Choose your fishing position and aim before F2", "critical",
+                "Fish-only mode uses your current position and cursor setup. It does not open NPC dialogue, move your character, or toggle or verify Shift Lock.",
+                ("Stand at your chosen fishing spot, outside NPC interaction range.",
+                 "Equip the rod and set your camera and cursor where you normally cast.",
+                 "If you use Shift Lock for fishing, turn it on yourself before F2. Otherwise keep your casting cursor steady inside Roblox."),
+                "Do not start with a menu open or your cursor over an Interact prompt. Fish-only mode will not close an NPC dialogue or reposition you.",
+                "F2 starts fishing from your chosen spot without an NPC visit or a Shift Lock test.",
+                None, False)
+            items[3] = (
+                "Set Shift Lock yourself; turn auto-run OFF", "high",
+                "Fish-only mode leaves Shift Lock as you set it. Automatic NPC toggles and cursor-snap checks are disabled, including before each cast.",
+                ("Turn off auto-run/running.", "Choose your preferred Shift Lock state before F2.",
+                 "Keep the camera and cursor stable while fishing. Stop before changing either."),
+                "A bad aim can still prevent casting. Skipping NPC checks does not fix a wrong fishing position or calibration.",
+                "You can cast from this view manually, and the macro leaves your chosen Shift Lock state unchanged.",
+                None, False)
+            items[4] = (
+                "Calibrate fishing areas after a display or UI change", "high",
+                "Fish-only mode still needs accurate fishing detection, but NPC menu and Craft calibration are not required for this run.",
+                ("Match the fullscreen/windowed mode, window size, and display scaling used for calibration.",
+                 "Check the reel bar band, bite marker area, and cast charge meter.",
+                 "Check the rod slot and recipe-note controls; use optional color samples only if normal detection fails."),
+                "Do not crop the reel bar or its progress strip out of the search area. Keep room for the moving charge meter.",
+                "The fishing overlays line up with your game; NPC calibration can wait until you enable buying or selling.",
+                None, False)
+            items[7] = (
+                "Confirm buying and selling are off", "important",
+                "No NPC action is scheduled for this setup. The macro fishes with your current resources and does not restock or sell automatically.",
+                ("Select Don't buy for a fish-only run, or leave bait tracking blank and set Sell every to 0.",
+                 "Prepare your bait and any required resources yourself before F2.",
+                 "Keep Balanced response unless your computer can handle Fast response comfortably."),
+                "A bait count is only an estimate. Fish-only mode never buys more, even when that count reaches the restock threshold.",
+                "The Run Profile says Fish-only / no NPC and Automatic buying off.",
+                None, False)
+            items[9] = (
+                "Stop and inspect a missed fishing state", "helpful",
+                "If the rod does not cast or a detector misses the bite or reel bar, stop and inspect that fishing step. NPC settings are not used in this mode.",
+                ("Stop with F4 before adjusting aim, focus, or calibration.",
+                 "Use F8 when recording detector problems.",
+                 "If a recipe Learn note stops the run, clear it manually, restore your aim and cursor setup, then restart with F2."),
+                "Do not manually click through a failed cast while the macro is still running.",
+                "The fishing view is clear and stable before you restart.",
+                None, False)
+            items[10] = (
+                "Final 20-second fish-only check", "helpful",
+                "Confirm the fishing essentials without an NPC-range or automatic Shift Lock requirement.",
+                ("Rod equipped, hotbar slot correct, and bait/resources prepared.",
+                 "Fishing position, camera, and cursor set; no menu or Interact prompt under the cursor.",
+                 "Auto-run off; your chosen Shift Lock state already set.",
+                 "Roblox focused and unobstructed at the calibrated display size; no distracting cosmetics in detection areas."),
+                "Do not enable Start until you can cast from this view yourself.",
+                "You are ready to leave the mouse alone while the macro fishes from your chosen spot.",
+                None, False)
         self._prep_items = []
         for index, (title, priority, desc, steps, warning, success, image_key, simulation) in enumerate(items, 1):
             item = PreparationItem(body, index, title, priority, desc, steps, warning,

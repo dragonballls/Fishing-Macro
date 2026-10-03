@@ -34,7 +34,7 @@ else:
 # afternoon is debugging a bug report from a build that already has the fix.
 # Patch iteration only. A confirmed, fully adapted Update 30/NPC release is
 # reserved for the next minor version.
-VERSION = "1.8.1.1.40"
+VERSION = "1.8.1.1.41"
 
 
 @dataclass
@@ -540,7 +540,7 @@ class Shop:
     these remain a conservative fallback for older or unrecognised UI.
     """
 
-    npc: str = "fisherman"          # "fisherman", or "none" to skip buying
+    npc: str = "fisherman"          # "none"/"off"/"" = fish-only, no NPC actions
     bait_per_purchase: int = 20     # must be a multiple of craft_step
     # Buy at 1, not 0: at zero the game unequips the bait, which would break
     # the cast. Bait is spent when a bite registers.
@@ -633,8 +633,9 @@ class Shop:
     # Give up on buying after this many consecutive failures.
     max_failures: int = 3
 
-    # On F2, open and immediately leave the NPC dialogue. The game's own push
-    # establishes the fishing position; the macro never sends a startup W.
+    # For active buying/selling routes, open and leave the NPC dialogue on F2.
+    # Fish-only runs skip this regardless of its saved value. The game's push
+    # establishes NPC-route fishing position; there is never a startup W.
     enter_stance_on_start: bool = True
 
 

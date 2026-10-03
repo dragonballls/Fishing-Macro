@@ -53,6 +53,7 @@ import time
 from collections.abc import Callable
 
 from .capture import Rect
+from .routes import npc_route_enabled
 from .debug import DEBUG
 from .inputs import SC_LSHIFT, SC_S, digit_scan
 from .vision import (
@@ -152,6 +153,10 @@ def _coherent_menu_stack(buttons: list[tuple[int, int]], roi: Rect) -> list[tupl
     if len(buttons) < 2:
         return []
     ordered = sorted(buttons, key=lambda point: point[1])
+    # Label lengths shift the clickable medians modestly, but two highlights
+    # on opposite sides of the envelope are not one aligned button stack.
+    if max(x for x, _y in ordered) - min(x for x, _y in ordered) > max(24, roi.width * 0.30):
+        return []
     # Roblox's row gap is a physical UI measurement (about 80 px in the
     # supplied 1080p footage), not a fraction of the user's search box.  A
     # fixed lower bound keeps an intentionally roomy/full-window calibration
@@ -274,8 +279,8 @@ def interaction_safety_guard() -> bool:
 
     Windows and Sober/X11 both expose a real desktop cursor position and send
     scan-code input.  They therefore share the same safety contract: a visible
-    dialogue prevents movement, and fishing starts only after Shift Lock's
-    cursor snap has been observed. Missing cursor observations fail closed.
+    dialogue prevents movement, and automatic NPC fishing routes start only
+    after Shift Lock's cursor snap is observed. Missing observations fail closed.
     """
     return True
 
@@ -472,7 +477,9 @@ def popup_up(engine) -> bool:
     image = engine.screen.grab(engine.window)
     # The Fisherman's own name strip is yellow too. A visible NPC menu proves
     # this is a dialogue, not a catch popup that should delay the shop route.
-    if (not _falling_menu_buttons(engine)
+    uses_npc = npc_route_enabled(engine.cfg, getattr(engine, "bait_count", None),
+                                 getattr(engine, "_buy_failures", 0))
+    if ((not uses_npc or not _falling_menu_buttons(engine))
             and update30_dialogue_present(image, engine.cfg.colors)):
         return True
     if interaction_safety_guard() and _uses_update30_popup_detector(engine):
@@ -500,6 +507,15 @@ def clear_recipe_note(engine) -> bool:
     """
     d = engine.cfg.dialog
     if not d.enabled or not learn_up(engine):
+        return False
+    if not npc_route_enabled(engine.cfg, getattr(engine, "bait_count", None),
+                             getattr(engine, "_buy_failures", 0)):
+        # In fish-only mode the user owns Shift Lock. We cannot free the cursor
+        # for Learn and restore its unknown state without a blind toggle.
+        engine.log("[catch] recipe note needs attention: fish-only mode keeps "
+                   "Shift Lock unchanged. Clear Learn manually, restore your "
+                   "fishing aim, then press F2 to restart.")
+        engine.stop()
         return False
     engine.log("[catch] new-recipe note — clicking Learn")
     was_locked = engine._shift_lock
@@ -570,7 +586,7 @@ def _menu_page_signature(engine) -> tuple:
     """Return the currently visible action stack as a stable page witness.
 
     The count identifies the expected number of rows; their positions make a
-    redraw reset the settle clock even if it temporarily has that same count.
+    real row movement resets the settle clock even if the count is unchanged.
     Legacy detection has no positions, so its count remains the fallback.
     """
     buttons = _falling_menu_buttons(engine)
@@ -587,6 +603,23 @@ def _clear_menu_page_witness(engine) -> None:
         del engine._menu_page_witness
     except AttributeError:
         pass
+
+
+def _same_menu_page_signature(first: tuple, second: tuple) -> bool:
+    """Allow small label-centre jitter while preserving the page/row proof.
+
+    Moving water behind translucent buttons and a pointer over a label shift
+    the median of white pixels by a few pixels even after the menu settles.
+    Compare against the original baseline, never accumulate movement across
+    samples. A changed count or actual falling row still resets the clock.
+    """
+    if first == second:
+        return True
+    if (not first or not second or first[0] == "legacy"
+            or second[0] == "legacy" or len(first) != len(second)):
+        return False
+    return all(abs(a[0] - b[0]) <= 8 and abs(a[1] - b[1]) <= 3
+               for a, b in zip(first, second))
 
 
 def wait_for_menu_page(engine, page: str, timeout: float, *,
@@ -614,12 +647,13 @@ def wait_for_menu_page(engine, page: str, timeout: float, *,
         signature = _menu_page_signature(engine)
         count = (len(signature) if signature and signature[0] != "legacy"
                  else int(signature[1]))
-        if signature == prior[1] and count == expected:
+        if _same_menu_page_signature(signature, prior[1]) and count == expected:
             return True
         _clear_menu_page_witness(engine)
     stable_since: float | None = None
     stable_signature: tuple | None = None
     settle = max(0.0, engine.cfg.shop.menu_page_settle)
+    observed_counts: set[int] = set()
     while time.perf_counter() < deadline:
         if not engine._alive():
             return False
@@ -632,9 +666,11 @@ def wait_for_menu_page(engine, page: str, timeout: float, *,
         signature = _menu_page_signature(engine)
         count = (len(signature) if signature and signature[0] != "legacy"
                  else int(signature[1]))
+        observed_counts.add(count)
         if count == expected:
             now = time.perf_counter()
-            if signature != stable_signature:
+            if (stable_signature is None or
+                    not _same_menu_page_signature(signature, stable_signature)):
                 stable_signature = signature
                 stable_since = now
             elif stable_since is not None and now - stable_since >= settle:
@@ -644,6 +680,11 @@ def wait_for_menu_page(engine, page: str, timeout: float, *,
             stable_since = None
             stable_signature = None
         time.sleep(poll)
+    log = getattr(engine, "log", None)
+    if callable(log):
+        counts = "/".join(str(count) for count in sorted(observed_counts)) or "none"
+        log(f"[shop] {page} page not confirmed: expected {expected} settled rows; "
+            f"observed {counts} — check that the NPC menu area includes every action row")
     return False
 
 
@@ -1098,7 +1139,7 @@ def _recover(engine) -> None:
 def enter_fishing_stance(engine) -> bool:
     """Re-engage shift lock after the NPC establishes fishing position.
 
-    Fishing needs shift lock on so the cursor stays pinned at centre where the
+    Automatic NPC routes use Shift Lock to pin the cursor at centre, where
     cast and bite clicks land. Roblox's dialogue push already takes the player
     to its fishing-side perimeter position. Sending a fixed W from there would
     be open-loop movement toward the water, so this function deliberately has
