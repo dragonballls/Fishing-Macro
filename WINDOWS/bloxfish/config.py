@@ -34,7 +34,7 @@ else:
 # afternoon is debugging a bug report from a build that already has the fix.
 # Patch iteration only. A confirmed, fully adapted Update 30/NPC release is
 # reserved for the next minor version.
-VERSION = "1.8.1.1.41"
+VERSION = "1.8.1.1.42"
 
 
 @dataclass
