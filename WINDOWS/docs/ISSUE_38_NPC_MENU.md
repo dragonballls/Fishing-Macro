@@ -2,7 +2,7 @@
 
 Issue: https://github.com/KlisDev/Fishing-Macro/issues/38
 
-The latest supplied recording shows the Fisherman root menu opening. The
+The original supplied recording shows the Fisherman root menu opening. The
 reporter's logs then stop startup because four settled action rows could not
 be confirmed. That path can fail before a Nevermind click is attempted;
 click coordinates alone do not prove an input-permission problem.
@@ -71,3 +71,69 @@ and attach F8 logs if a later stage still fails.
 
 Local extracted frames are diagnostic artifacts in an ignored `diag/` folder.
 The user's recording and personal screenshots are not added to version control.
+
+## Follow-up: optional color sampling selected obsolete UI logic
+
+The reporter retried 1.8.1.1.42 and supplied the new recording
+`_4heGooPflo` and their config on 2026-10-05. This is a separate residual
+defect, not proof that the previous panel/label correction was unnecessary.
+The new log sometimes confirms the root page, then reports that the NPC
+dialogue could not close. The optional catch-dialogue color sample is off.
+
+`_uses_update30_popup_detector()` incorrectly used `cap_dialogue_on` as a
+current/old UI selector. With the sample off, menu counting, page signatures,
+dialogue presence, dialogue exit and catch-card presence could use pre-Update
+30 grey-band/blue-panel detection. After a real Nevermind dismissal, flooring
+and scenery could therefore keep the macro in a phantom dialogue. Enabling
+an optional sample happened to suppress those fallbacks; it was not a proper
+requirement for current UI detection.
+
+### Targeted correction in 1.8.1.1.43
+
+- Use current live action rows for menu counts, page proofs, dialogue presence
+  and exit on both supported runtimes, regardless of optional color sampling.
+- Keep current yellow-header catch-card detection active with the sample off;
+  a sample only supplements color matching. Do not fall back to the obsolete
+  blue card when current detection says there is no catch popup.
+- Preserve the four-row root proof, existing settle time and jitter tolerance,
+  calibrated menu envelope, named buy/sell actions, bounded movement probes,
+  no movement through visible dialogue and verified fishing Shift Lock.
+- Keep saved config values and every calibration point. No migration, config
+  reset, wider search rectangle or mandatory optional sample is needed.
+
+### Exact-profile reproduction and limits
+
+The reporter's saved envelope is left `0.692`, top `0.4384`, right `0.9048`,
+bottom `0.7515`. With the logged game rectangle `1922x1022 at (-1,-1)`, it
+projects to `(1329,447,409,320)`. Replay scales the supplied 1280x720 video
+to its recorded 1920x1080 desktop; this remains compressed video evidence,
+not the raw pixels returned by their capture backend.
+
+In the new recording's closed-menu frame at 202 seconds, current action-row
+detection correctly returns zero rows, but the obsolete counter returns two.
+The pre-patch default profile therefore calls that scene an open dialogue.
+The same defect is reproduced independently with synthetic grey scenery.
+Open-menu segments contain complete stable four-row runs, so lowering the
+required row count or loosening settling is not justified.
+
+Recorded open/closed images plus the exact saved envelope drive the real root
+confirmation, exit and full NPC-anchor functions using a simulated clock and
+fake input devices. The patched path confirms root, sends one live Nevermind
+click at `(1473,730)`, verifies the closed scene and completes the anchor with
+both optional-sample settings. It sends no Interact click or movement key.
+Shift Lock activation in that replay is mocked; separate existing tests cover
+its verification and rejection safeguards.
+
+Nine new synthetic tests run both optional-sample settings. Five fail against
+the pre-patch default profile and pass after the correction. They cover closed
+scenery, absence of obsolete detection, complete/partial root pages, real yellow
+catch cards, old blue scenery, NPC name-strip suppression, one-click exit and
+startup anchoring. Reporter media and config are not committed.
+
+Final validation ran all 147 tests successfully with the opt-in GUI tests
+enabled, including Windows regressions and mocked Linux platform coverage.
+`git diff --check` passed. An independent code review found no blocking issues.
+
+This fixes a confirmed default-profile defect. Live Roblox input acceptance,
+the reporter's capture backend and live Sober/X11 behavior still require a
+retry; recorded/mock tests are not a guarantee that every NPC failure is fixed.

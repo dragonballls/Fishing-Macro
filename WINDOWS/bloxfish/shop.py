@@ -57,8 +57,8 @@ from .routes import npc_route_enabled
 from .debug import DEBUG
 from .inputs import SC_LSHIFT, SC_S, digit_scan
 from .vision import (
-    craft_window_open, dialogue_overlay_frac, learn_button_present,
-    find_falling_menu_buttons, menu_button_count, update30_dialogue_present,
+    craft_window_open, learn_button_present,
+    find_falling_menu_buttons, update30_dialogue_present,
 )
 
 
@@ -126,16 +126,13 @@ def _craft_roi(engine) -> Rect:
 
 
 def menu_items(engine) -> int:
-    buttons = _falling_menu_buttons(engine)
-    if buttons:
-        return len(buttons)
-    # A calibrated Update-30 profile deliberately trusts only its live action
-    # rows.  The legacy band counter can mistake water, rods, or cosmetics in a
-    # modern menu search area for a button page, which is unsafe evidence for a
-    # named action or a movement decision.
-    if interaction_safety_guard() and _uses_update30_popup_detector(engine):
-        return 0
-    return menu_button_count(engine.screen.grab(_menu_roi(engine)))
+    """Count current action rows, never scenery from the old grey-band scan.
+
+    Optional catch-header color sampling is not a UI-version selector. The
+    shipped game uses Update 30 with or without that sample, and a closed menu
+    must not become a phantom page just because the sample is disabled.
+    """
+    return len(_falling_menu_buttons(engine))
 
 
 def _coherent_menu_stack(buttons: list[tuple[int, int]], roi: Rect) -> list[tuple[int, int]]:
@@ -202,19 +199,6 @@ def action_menu_open(engine) -> bool:
     therefore the right completion witness immediately *after* Confirm.
     """
     return len(_falling_menu_buttons(engine)) >= 2
-
-
-def _uses_update30_popup_detector(engine) -> bool:
-    """Whether this profile has a current-UI dialogue colour calibration.
-
-    The old centre-panel fallback is useful only for the pre-Update-30 blue
-    card. On the current UI it sees the fishing meter and Safe Zone artwork as
-    a solid panel, producing an eight-second pause before every NPC visit.
-    """
-    try:
-        return bool(engine.cfg.colors.cap_dialogue_on)
-    except Exception:                              # compatibility/test doubles
-        return False
 
 
 def click_menu_item(engine, index: int, name: str = "menu button") -> None:
@@ -470,10 +454,10 @@ def _learn_roi(engine) -> Rect:
 
 
 def popup_up(engine) -> bool:
-    d = engine.cfg.dialog
     # Update 30 moved the catch card to the bottom and changed its panel from
     # the old blue centre block to a yellow-header card. Check the complete game
-    # frame first, then retain the old calibrated-centre witness for older UI.
+    # frame. Optional color sampling supplements this detector; it never
+    # enables the obsolete blue-card detector for the current game.
     image = engine.screen.grab(engine.window)
     # The Fisherman's own name strip is yellow too. A visible NPC menu proves
     # this is a dialogue, not a catch popup that should delay the shop route.
@@ -482,14 +466,10 @@ def popup_up(engine) -> bool:
     if ((not uses_npc or not _falling_menu_buttons(engine))
             and update30_dialogue_present(image, engine.cfg.colors)):
         return True
-    if interaction_safety_guard() and _uses_update30_popup_detector(engine):
-        # Do not mix the old blue-card signal into a calibrated current-UI
-        # profile. The legacy ROI can be >60% "panel" during normal fishing.
-        return False
-    roi = _dialog_roi(engine)
-    x0, y0 = roi.left - engine.window.left, roi.top - engine.window.top
-    return dialogue_overlay_frac(image[y0:y0 + roi.height,
-                                     x0:x0 + roi.width]) >= d.present_frac
+    # The old blue-card ROI can look like a solid panel during normal fishing
+    # (water, flooring, Safe Zone text or the charge meter). It is not evidence
+    # of a current catch card, regardless of the optional sample's checkbox.
+    return False
 
 
 def learn_up(engine) -> bool:
@@ -585,16 +565,12 @@ def _wait_until(engine, pred, timeout: float) -> bool:
 def _menu_page_signature(engine) -> tuple:
     """Return the currently visible action stack as a stable page witness.
 
-    The count identifies the expected number of rows; their positions make a
-    real row movement resets the settle clock even if the count is unchanged.
-    Legacy detection has no positions, so its count remains the fallback.
+    The count identifies the expected number of rows; their positions make
+    real row movement reset the settle clock even if the count is unchanged.
+    Only current live rows can prove a page; legacy grey bands cannot.
     """
     buttons = _falling_menu_buttons(engine)
-    if buttons:
-        return tuple((int(round(x)), int(round(y))) for x, y in buttons)
-    if _uses_update30_popup_detector(engine):
-        return ("legacy", 0)
-    return ("legacy", menu_items(engine))
+    return tuple((int(round(x)), int(round(y))) for x, y in buttons)
 
 
 def _clear_menu_page_witness(engine) -> None:
@@ -645,8 +621,7 @@ def wait_for_menu_page(engine, page: str, timeout: float, *,
     prior = getattr(engine, "_menu_page_witness", None)
     if prior is not None and prior[0] == page:
         signature = _menu_page_signature(engine)
-        count = (len(signature) if signature and signature[0] != "legacy"
-                 else int(signature[1]))
+        count = len(signature)
         if _same_menu_page_signature(signature, prior[1]) and count == expected:
             return True
         _clear_menu_page_witness(engine)
@@ -664,8 +639,7 @@ def wait_for_menu_page(engine, page: str, timeout: float, *,
         if saw_dialogue is not None and action_menu_open(engine):
             saw_dialogue[0] = True
         signature = _menu_page_signature(engine)
-        count = (len(signature) if signature and signature[0] != "legacy"
-                 else int(signature[1]))
+        count = len(signature)
         observed_counts.add(count)
         if count == expected:
             now = time.perf_counter()
@@ -893,13 +867,7 @@ def in_dialogue(engine) -> bool:
     on screen.
     """
     try:
-        if action_menu_open(engine):
-            return True
-        if _uses_update30_popup_detector(engine):
-            # The legacy button counter mistakes the post-sale/result artwork
-            # for two rows long after every real action row is gone.
-            return False
-        return menu_items(engine) >= 2
+        return action_menu_open(engine)
     except Exception:                                # noqa: BLE001
         return False
 
@@ -929,8 +897,8 @@ def leave_dialogue(engine, tries: int = 3) -> bool:
     'Back' then 'Nevermind' is the normal way out. Update 30 redraws through a
     brief blank/partial state after Back, so a missing row is **not** evidence
     that the dialogue closed. First wait for the complete root page, then let
-    its Nevermind row settle before clicking it. If that still fails, fall back
-    on the fact that *moving* closes the dialogue.
+    its Nevermind row settle before clicking it. If that still fails, stop
+    safely rather than trying to close it with movement.
 
     There is no movement recovery here. A W/S pair is not reversible after the
     NPC's radial push and would slowly rotate the player away from the NPC.
@@ -942,18 +910,14 @@ def leave_dialogue(engine, tries: int = 3) -> bool:
     # visibly stabs at it. Tunable in Advanced cooldowns ("Before clicking
     # Nevermind").
     engine._sleep(cfg.before_leave)
-    modern_ui = _uses_update30_popup_detector(engine)
-
     def root_ready() -> bool:
-        return (len(_falling_menu_buttons(engine)) >= cfg.main_menu_items
-                if modern_ui else menu_items(engine) >= cfg.main_menu_items)
+        return len(_falling_menu_buttons(engine)) == MENU_PAGE_ROWS["root"]
 
     # CRAFT normally returns to the two-row bait page. If the detector catches
     # the short fade instead, wait for a real menu before deciding which bottom
     # action is safe to use.
-    visible_pred = ((lambda: action_menu_open(engine)) if modern_ui
-                    else lambda: menu_items(engine) >= 2)
-    visible = _wait_until(engine, visible_pred, cfg.root_menu_timeout)
+    visible = _wait_until(engine, lambda: action_menu_open(engine),
+                          cfg.root_menu_timeout)
     if not visible:
         return not in_dialogue(engine)
 

@@ -330,8 +330,12 @@ class VisionRegressionTests(unittest.TestCase):
         # inherit the real-world visual settle delay from Config().
         engine.cfg.shop.menu_page_settle = 0.0
         actions = []
-        # visible bait page -> not root -> root after Back
-        with mock.patch.object(shop, "menu_items", side_effect=[2, 2, 4, 4]), \
+        # Current action rows prove bait -> root after Back. Optional color
+        # sampling must never select the old grey-band counter for this route.
+        bait_rows = [(100, 500), (100, 580)]
+        root_rows = [(100, 340), (100, 420), (100, 500), (100, 580)]
+        with mock.patch.object(shop, "_falling_menu_buttons",
+                               side_effect=[bait_rows, bait_rows, root_rows, root_rows]), \
              mock.patch.object(shop, "in_dialogue", side_effect=[True, False]), \
              mock.patch.object(shop, "click_menu_action",
                                side_effect=lambda _e, p, a: actions.append((p, a))):
@@ -391,7 +395,7 @@ class VisionRegressionTests(unittest.TestCase):
         engine.cfg.colors.cap_dialogue_on = True
         with mock.patch.object(shop, "_falling_menu_buttons", return_value=[]), \
              mock.patch.object(shop, "update30_dialogue_present", return_value=False), \
-             mock.patch.object(shop, "dialogue_overlay_frac", return_value=0.61):
+             mock.patch("bloxfish.vision.dialogue_overlay_frac", return_value=0.61):
             self.assertFalse(shop.popup_up(engine))
 
     def test_npc_return_uses_two_bounded_short_adjustable_s_probes(self) -> None:
