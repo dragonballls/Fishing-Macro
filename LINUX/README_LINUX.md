@@ -6,6 +6,23 @@ The detector, Update 30 NPC logic, safety watchdog, calibration workflow, and
 all four GUI pages are shared with the Windows build; Linux replaces only the
 window, focus, input, runtime-profile, and F8-overlay layers.
 
+## Current shared fix: 1.8.1.1.44
+
+Both Linux launchers use the same 1.8.1.1.44 core and version as Windows.
+NPC rows require visible label/icon evidence; plain dark scenery cannot count
+as an open menu. Each action retry rechecks its source page, and a failed
+capture cannot confirm that dialogue closed. Optional catch-dialogue color
+sampling still supplements the current detector without selecting old UI logic.
+
+The accompanying Windows fix verifies F8 click-through after the native window
+exists. Linux retains its separate X11 Shape overlay with an empty input region.
+
+No Linux config reset, mandatory color sampling or separate patch is needed.
+The four-row root requirement, settling, movement limits and Shift Lock
+verification are unchanged. Keep both `LINUX/` and `WINDOWS/` in the download;
+the latter contains the shared implementation, not a Windows-only copy.
+Automated parity checks pass, but live Sober/X11 confirmation is still required.
+
 > Wayland is intentionally unsupported in this release. Capture, global
 > hotkeys, input injection, and the click-through hitbox overlay rely on X11.
 

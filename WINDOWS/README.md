@@ -397,6 +397,9 @@ on your own machine, Roblox fullscreen and focused, hands off the mouse.
   bite, bar-found size, reel result and click with timestamps. Press `F8` again
   to stop; it prints where the log was saved. Send that log (and the recording).
   From a terminal (`run.py`) `F8` writes the log only, no overlay.
+  As of 1.8.1.1.44, the Windows overlay verifies its native click-through setup
+  before displaying markers. If that setup fails, it keeps the diagnostic log
+  without displaying a window that could intercept game clicks.
 * **Run `python run.py --dev`.** Turns on the log, the failure-pixel dumps and
   the working-strip captures at once into a single `capture_<timestamp>/` folder
   — zip that one folder and send it. (`--diag` alone still works for just the

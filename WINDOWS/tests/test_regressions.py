@@ -204,22 +204,23 @@ class VisionRegressionTests(unittest.TestCase):
 
         self.assertEqual(engine.mouse.clicks, [(1544, 660), (1544, 746)])
 
-    def test_dark_menu_panels_win_over_a_white_cursor(self) -> None:
+    def test_backed_menu_labels_win_over_a_white_cursor(self) -> None:
         """A cursor above the first row must not move Buy Bait's target."""
         image = np.full((348, 365, 3), (210, 170, 60), dtype=np.uint8)
-        for top in (80, 163, 246):
+        for top, label in zip((80, 163, 246), ('Buy Bait', 'Sell Fish', 'Back')):
             image[top:top + 75, :] = (30, 30, 30)
+            cv2.putText(image, label, (60, top + 49), cv2.FONT_HERSHEY_SIMPLEX,
+                        .9, (255, 255, 255), 2, cv2.LINE_AA)
         # The cursor-like white blob reproduced from the failing video.
         image[35:50, 290:305] = 255
 
         buttons = find_falling_menu_buttons(image)
 
         self.assertEqual(len(buttons), 3)
-        self.assertTrue(all(abs(button.x - image.shape[1] * 0.5) <= 1
-                            for button in buttons))
-        self.assertTrue(all(abs(button.y - expected) <= 3
-                            for button, expected in zip(buttons,
-                                                        (117, 200, 283))))
+        # Every target belongs to its actual label and never the stray pointer.
+        self.assertTrue(all(60 < button.x < 280 for button in buttons))
+        self.assertTrue(all(top < button.y < top + 75
+                            for button, top in zip(buttons, (80, 163, 246))))
 
     def test_update30_named_actions_keep_page_roles_separate(self) -> None:
         image = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -334,11 +335,18 @@ class VisionRegressionTests(unittest.TestCase):
         # sampling must never select the old grey-band counter for this route.
         bait_rows = [(100, 500), (100, 580)]
         root_rows = [(100, 340), (100, 420), (100, 500), (100, 580)]
+        state = [0]
+        clock = [0.0]
+        def action(_engine, page, name):
+            actions.append((page, name))
+            state[0] += 1
+            return True
         with mock.patch.object(shop, "_falling_menu_buttons",
-                               side_effect=[bait_rows, bait_rows, root_rows, root_rows]), \
-             mock.patch.object(shop, "in_dialogue", side_effect=[True, False]), \
-             mock.patch.object(shop, "click_menu_action",
-                               side_effect=lambda _e, p, a: actions.append((p, a))):
+                               side_effect=lambda *_a, **_kw: (bait_rows, root_rows, [])[state[0]]), \
+             mock.patch.object(shop, "click_menu_action", side_effect=action), \
+             mock.patch.object(shop.time, "perf_counter", side_effect=lambda: clock[0]), \
+             mock.patch.object(shop.time, "sleep",
+                               side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
             self.assertTrue(shop.leave_dialogue(engine))
 
         self.assertEqual(actions, [("bait", "back"), ("root", "nevermind")])

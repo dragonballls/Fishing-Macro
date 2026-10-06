@@ -110,6 +110,11 @@ class OverlayRenderer:
         import tkinter as tk
         self._tk = tk
         self.win = tk.Toplevel(tk_parent)
+        # Tk creates its native wrapper during idle layout, not at Toplevel().
+        # Keep it hidden until click-through has been installed and verified.
+        self.win.withdraw()
+        self._alive = False
+        self._tick_id = None
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         # Cover the full virtual desktop, not only the primary display.  Every
@@ -128,26 +133,70 @@ class OverlayRenderer:
         self.canvas = tk.Canvas(self.win, bg=self.KEY, highlightthickness=0,
                                 borderwidth=0)
         self.canvas.pack(fill="both", expand=True)
-        self._passthrough()
         self._lock = threading.Lock()
         self._boxes: dict = {}   # name -> (left, top, right, bottom, expiry)
         self._dots: dict = {}    # name -> (x, y, expiry)
         self._marks: dict = {}   # name -> (x0, x1, y, expiry)  brackets above bar
-        self._alive = True
-        self.win.after(30, self._tick)
+        try:
+            self.win.update_idletasks()
+            self._passthrough()
+            self.win.deiconify()
+            self.win.update_idletasks()
+            self._passthrough()  # verify the mapped wrapper as well
+            self._alive = True
+            self.win.bind("<Map>", self._mapped, add="+")
+            self._tick_id = self.win.after(30, self._tick)
+        except Exception:
+            self.close()
+            raise  # DebugBus retains the log and reports overlay unavailability
 
     def _passthrough(self) -> None:
-        """WS_EX_LAYERED | TRANSPARENT so the mouse passes through to the game."""
+        """Require a real Tk wrapper and verified, non-activating passthrough."""
         import ctypes
-        hwnd = ctypes.windll.user32.GetParent(self.win.winfo_id())
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetParent.argtypes = [wintypes.HWND]
+        user32.GetParent.restype = wintypes.HWND
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetWindowLongW.restype = wintypes.LONG
+        user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+        user32.SetWindowLongW.restype = wintypes.LONG
+        user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                       ctypes.c_int, wintypes.UINT]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        hwnd = user32.GetParent(self.win.winfo_id())
+        if not hwnd:
+            raise RuntimeError("F8 overlay has no native window; hitboxes disabled")
         GWL_EXSTYLE = -20
         WS_EX_LAYERED = 0x00080000
         WS_EX_TRANSPARENT = 0x00000020
         WS_EX_TOOLWINDOW = 0x00000080
-        cur = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        ctypes.windll.user32.SetWindowLongW(
-            hwnd, GWL_EXSTYLE,
-            cur | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW)
+        WS_EX_NOACTIVATE = 0x08000000
+        required = (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW
+                    | WS_EX_NOACTIVATE)
+        cur = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        ctypes.set_last_error(0)
+        previous = user32.SetWindowLongW(hwnd, GWL_EXSTYLE, cur | required)
+        if not previous and ctypes.get_last_error():
+            raise ctypes.WinError(ctypes.get_last_error())
+        # Flush the style change without moving, resizing, activating or
+        # changing the window's stacking order.
+        if not user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x37):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & required != required:
+            raise RuntimeError("F8 click-through could not be verified; hitboxes disabled")
+        self._hwnd = hwnd
+
+    def _mapped(self, event) -> None:
+        if event.widget is not self.win or not self._alive:
+            return
+        try:
+            self._passthrough()
+        except Exception as exc:
+            self.close()
+            DEBUG.event("overlay", "disabled; diagnostic log remains active", error=str(exc))
 
     # -- fed from the debug bus (any thread) --
     def box(self, name: str, rect) -> None:
@@ -181,6 +230,7 @@ class OverlayRenderer:
             self.canvas.tag_raise(tid)
 
     def _tick(self) -> None:
+        self._tick_id = None
         if not self._alive:
             return
         now = time.perf_counter()
@@ -230,11 +280,14 @@ class OverlayRenderer:
             self.canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill=col,
                                     outline="")
             self._label(x, y - 22, name, col, anchor="center")
-        self.win.after(40, self._tick)
+        self._tick_id = self.win.after(40, self._tick)
 
     def close(self) -> None:
         self._alive = False
         try:
+            if self._tick_id is not None:
+                self.win.after_cancel(self._tick_id)
+                self._tick_id = None
             self.win.destroy()
         except Exception:                              # noqa: BLE001
             pass
@@ -262,7 +315,7 @@ class DebugBus:
 
     @property
     def overlay_visible(self) -> bool:
-        return self._overlay is not None
+        return self._overlay is not None and getattr(self._overlay, "_alive", True)
 
     # -- hot-path hooks --
     def box(self, name: str, rect) -> None:

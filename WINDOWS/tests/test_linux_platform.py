@@ -83,8 +83,23 @@ class LinuxProfileTests(unittest.TestCase):
             "import sys,json; sys.path.insert(0,sys.argv[1]); "
             "from linux_runtime import configure_linux_runtime; configure_linux_runtime(); "
             "import easy_run; from bloxfish import config,engine,shop,vision,routes,terminal_setup; "
+            "import numpy as np; from types import SimpleNamespace; "
+            "from bloxfish.capture import Rect; "
+            "scene=np.full((350,420,3),100,dtype=np.uint8); "
+            "scene[50:80,20:400]=150; scene[170:200,20:400]=150; "
+            "dark=scene.copy(); dark[50:90,:]=30; dark[170:210,:]=30; "
+            "cfg=config.Config(); cfg.shop.menu_left=cfg.shop.menu_top=0.; "
+            "cfg.shop.menu_right=cfg.shop.menu_bottom=1.; "
+            "probe=SimpleNamespace(cfg=cfg,window=Rect(0,0,420,350),"
+            "screen=SimpleNamespace(grab=lambda _rect:scene)); "
             "print(json.dumps({'gui':easy_run.__file__,'version':config.VERSION,"
             "'assets':str(easy_run.ASSETS),'config':str(config.CONFIG_PATH),"
+            "'engine_shop':engine.shop_mod.__file__,"
+            "'sample_enabled':cfg.colors.cap_dialogue_on,"
+            "'obsolete_count':vision.menu_button_count(scene),"
+            "'dark_panel_rows':len(vision.find_falling_menu_buttons(dark)),"
+            "'current_count':shop.menu_items(probe),'dialogue':shop.in_dialogue(probe),"
+            "'signature':shop._menu_page_signature(probe),"
             "'modules':[m.__file__ for m in (engine,shop,vision,routes,terminal_setup)]}))"
         )
         result = subprocess.run([sys.executable, '-B', '-c', code, str(LINUX)],
@@ -95,6 +110,13 @@ class LinuxProfileTests(unittest.TestCase):
         self.assertEqual(Path(report['gui']), WINDOWS / 'easy_run.py')
         self.assertEqual(Path(report['assets']), LINUX / 'assets' / 'gui')
         self.assertEqual(Path(report['config']), LINUX / 'config.json')
+        self.assertEqual(Path(report['engine_shop']), WINDOWS / 'bloxfish' / 'shop.py')
+        self.assertFalse(report['sample_enabled'])
+        self.assertGreaterEqual(report['obsolete_count'], 2)
+        self.assertEqual(report['dark_panel_rows'], 0)
+        self.assertEqual(report['current_count'], 0)
+        self.assertFalse(report['dialogue'])
+        self.assertEqual(report['signature'], [])
         for source in report['modules']:
             self.assertEqual(Path(source).parent, WINDOWS / 'bloxfish')
 

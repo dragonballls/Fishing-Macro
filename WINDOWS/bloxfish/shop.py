@@ -29,8 +29,8 @@ visible row twice:
     click visible bottom -> "Back"       -> main menu
     click visible bottom -> "Nevermind"  -> dialogue closes
 
-Walking out of range is retained as the final recovery route because Update 30
-also closes the dialogue that way.
+Recovery verifies the visible page before each exit click. It never walks
+through an open or uncertain dialogue.
 
 Closing the dialogue leaves shift lock **off** (the cursor is free again). The
 game's interaction push establishes the fishing position, so the macro only
@@ -167,7 +167,7 @@ def _coherent_menu_stack(buttons: list[tuple[int, int]], roi: Rect) -> list[tupl
     return ordered
 
 
-def _falling_menu_buttons(engine):
+def _falling_menu_buttons(engine, *, strict: bool = False):
     """Find the live stack inside its calibrated full-page envelope.
 
     The menu area scopes live detection as well as the older fixed fallback:
@@ -186,7 +186,9 @@ def _falling_menu_buttons(engine):
         # that a dialogue is open or clicks a named action.
         return (_coherent_menu_stack(buttons, roi)
                 if interaction_safety_guard() else buttons)
-    except Exception:                              # detector must be optional
+    except Exception:
+        if strict:
+            raise
         return []
 
 
@@ -238,7 +240,7 @@ def click_menu_item(engine, index: int, name: str = "menu button") -> None:
     engine.mouse.click_at(x, y)
 
 
-def click_menu_action(engine, page: str, action: str) -> None:
+def click_menu_action(engine, page: str, action: str) -> bool:
     """Click a named Update 30 menu action on its expected page.
 
     This names the role before converting it into the page-local visible row.
@@ -249,7 +251,26 @@ def click_menu_action(engine, page: str, action: str) -> None:
         index = MENU_ACTION_ROWS[page][action]
     except KeyError as exc:
         raise ShopError(f"unknown menu action {page}.{action}") from exc
-    click_menu_item(engine, index, f"{page}.{action}")
+    prior = getattr(engine, "_menu_page_witness", None)
+    if prior is None:
+        # Preserve the low-level calibrated action API. Production routes
+        # obtain a settled page witness before entering this function.
+        click_menu_item(engine, index, f"{page}.{action}")
+        return True
+    signature = _menu_page_signature(engine)
+    if (prior[0] != page or signature is None
+            or len(signature) != MENU_PAGE_ROWS[page]
+            or not _same_menu_page_signature(signature, prior[1])):
+        _clear_menu_page_witness(engine)
+        DEBUG.event("menu", "changed before click; skipped", page=page, action=action)
+        return False
+    # Use the very observation we verified. Recapturing inside click_menu_item
+    # could silently target a different page after a delayed transition.
+    x, y = signature[index]
+    _clear_menu_page_witness(engine)
+    DEBUG.click(f"{page}.{action} (live stack)", x, y)
+    engine.mouse.click_at(x, y)
+    return True
 
 
 def craft_up(engine) -> bool:
@@ -562,14 +583,18 @@ def _wait_until(engine, pred, timeout: float) -> bool:
     return False
 
 
-def _menu_page_signature(engine) -> tuple:
+def _menu_page_signature(engine) -> tuple | None:
     """Return the currently visible action stack as a stable page witness.
 
     The count identifies the expected number of rows; their positions make
     real row movement reset the settle clock even if the count is unchanged.
     Only current live rows can prove a page; legacy grey bands cannot.
     """
-    buttons = _falling_menu_buttons(engine)
+    try:
+        buttons = _falling_menu_buttons(engine, strict=True)
+    except Exception as exc:
+        DEBUG.event("menu", "observation unavailable", error=str(exc))
+        return None
     return tuple((int(round(x)), int(round(y))) for x, y in buttons)
 
 
@@ -589,6 +614,8 @@ def _same_menu_page_signature(first: tuple, second: tuple) -> bool:
     Compare against the original baseline, never accumulate movement across
     samples. A changed count or actual falling row still resets the clock.
     """
+    if first is None or second is None:
+        return False
     if first == second:
         return True
     if (not first or not second or first[0] == "legacy"
@@ -621,7 +648,7 @@ def wait_for_menu_page(engine, page: str, timeout: float, *,
     prior = getattr(engine, "_menu_page_witness", None)
     if prior is not None and prior[0] == page:
         signature = _menu_page_signature(engine)
-        count = len(signature)
+        count = len(signature) if signature is not None else -1
         if _same_menu_page_signature(signature, prior[1]) and count == expected:
             return True
         _clear_menu_page_witness(engine)
@@ -636,10 +663,11 @@ def wait_for_menu_page(engine, page: str, timeout: float, *,
         # intentionally less strict than a page proof: it is *not* permission
         # to click an action, only a hard boundary against walking backwards
         # through a menu that is visibly opening.
-        if saw_dialogue is not None and action_menu_open(engine):
-            saw_dialogue[0] = True
         signature = _menu_page_signature(engine)
-        count = len(signature)
+        count = len(signature) if signature is not None else -1
+        if saw_dialogue is not None and (count >= 2 or signature is None):
+            # An unreadable frame is also a boundary against blind S movement.
+            saw_dialogue[0] = True
         observed_counts.add(count)
         if count == expected:
             now = time.perf_counter()
@@ -656,7 +684,8 @@ def wait_for_menu_page(engine, page: str, timeout: float, *,
         time.sleep(poll)
     log = getattr(engine, "log", None)
     if callable(log):
-        counts = "/".join(str(count) for count in sorted(observed_counts)) or "none"
+        counts = "/".join("unavailable" if count < 0 else str(count)
+                          for count in sorted(observed_counts)) or "none"
         log(f"[shop] {page} page not confirmed: expected {expected} settled rows; "
             f"observed {counts} — check that the NPC menu area includes every action row")
     return False
@@ -755,17 +784,23 @@ def _click_menu_action_until(engine, page: str, action: str, *,
                              done: Callable[[], bool], tries: int,
                              wait: float, next_page: str | None = None) -> bool:
     """Retry one named action only from a stable page, observing its result."""
-    if not wait_for_menu_page(engine, page, wait):
-        return False
-    for _ in range(max(1, tries)):
+    for attempt in range(max(1, tries)):
         if not engine._alive():
             return False
-        if next_page is None and done():
+        if next_page is None and attempt and done():
             return True
+        if attempt and next_page is not None:
+            signature = _menu_page_signature(engine)
+            if signature is not None and len(signature) == MENU_PAGE_ROWS[next_page]:
+                return wait_for_menu_page(engine, next_page, wait)
+        if not wait_for_menu_page(engine, page, wait):
+            return (wait_for_menu_page(engine, next_page, wait)
+                    if next_page is not None and engine._alive() else False)
         # Do not wait for the destination before sending the source action.
         # That used to spend a full Shop-page timeout while the root menu was
         # still correctly on screen, making every dialogue action feel frozen.
-        click_menu_action(engine, page, action)
+        if click_menu_action(engine, page, action) is False:
+            continue
         if next_page is not None:
             if wait_for_menu_page(engine, next_page, wait):
                 return True
@@ -794,7 +829,9 @@ def sell(engine, *, stay_at_npc: bool = False) -> bool:
 
     def fail(why: str) -> bool:
         log(f"[sell] FAILED: {why} — nothing sold")
-        _recover(engine)
+        if not _recover(engine) or not engine._alive():
+            engine.stop()
+            return False
         set_rod(engine, True)
         enter_fishing_stance(engine)
         return False
@@ -848,8 +885,9 @@ def _confirm_sale(engine, *, tries: int, wait: float) -> bool:
     for _ in range(max(1, tries)):
         if not engine._alive() or not wait_for_menu_page(engine, "confirm", wait):
             return False
-        click_menu_action(engine, "confirm", "confirm")
-        if _wait_until(engine, lambda: not action_menu_open(engine), wait):
+        if click_menu_action(engine, "confirm", "confirm") is False:
+            continue
+        if _wait_dialogue_closed(engine, wait):
             return True
     return False
 
@@ -891,6 +929,29 @@ def _click_until(engine, click, done, tries: int = 6, wait: float = 1.2) -> bool
     return done()
 
 
+def _wait_dialogue_closed(engine, timeout: float) -> bool:
+    """Require sustained, successfully captured absence after an exit click."""
+    deadline = time.perf_counter() + timeout
+    absent_since = None
+    poll = max(.03, engine.cfg.shop.poll)
+    while time.perf_counter() < deadline:
+        if not engine._alive():
+            return False
+        signature = _menu_page_signature(engine)
+        now = time.perf_counter()
+        if signature == ():
+            if absent_since is None:
+                absent_since = now
+            elif now - absent_since >= .24:
+                _clear_menu_page_witness(engine)
+                return True
+        else:
+            # None is a failed capture, never evidence that the menu closed.
+            absent_since = None
+        time.sleep(poll)
+    return False
+
+
 def leave_dialogue(engine, tries: int = 3) -> bool:
     """Get out of the NPC dialogue from whatever page we are on.
 
@@ -911,7 +972,8 @@ def leave_dialogue(engine, tries: int = 3) -> bool:
     # Nevermind").
     engine._sleep(cfg.before_leave)
     def root_ready() -> bool:
-        return len(_falling_menu_buttons(engine)) == MENU_PAGE_ROWS["root"]
+        signature = _menu_page_signature(engine)
+        return signature is not None and len(signature) == MENU_PAGE_ROWS["root"]
 
     # CRAFT normally returns to the two-row bait page. If the detector catches
     # the short fade instead, wait for a real menu before deciding which bottom
@@ -919,10 +981,14 @@ def leave_dialogue(engine, tries: int = 3) -> bool:
     visible = _wait_until(engine, lambda: action_menu_open(engine),
                           cfg.root_menu_timeout)
     if not visible:
-        return not in_dialogue(engine)
+        return _wait_dialogue_closed(engine, cfg.nevermind_retry)
 
-    if not root_ready():
-        click_menu_action(engine, "bait", "back")
+    prior = getattr(engine, "_menu_page_witness", None)
+    if not root_ready() and not (prior is not None and prior[0] == "root"):
+        if not wait_for_menu_page(engine, "bait", cfg.root_menu_timeout):
+            return False
+        if click_menu_action(engine, "bait", "back") is False:
+            return False
         # Never use "no rows right now" as the success condition here. Back
         # creates exactly that transient and was the reason Nevermind got lost.
         if not wait_for_menu_page(engine, "root", cfg.root_menu_timeout):
@@ -930,11 +996,13 @@ def leave_dialogue(engine, tries: int = 3) -> bool:
 
     engine._sleep(cfg.root_menu_settle)
     for _ in range(max(1, tries)):
-        if not engine._alive() or not in_dialogue(engine):
-            return True
-        click_menu_action(engine, "root", "nevermind")
-        if _wait_until(engine, lambda: not in_dialogue(engine),
-                       cfg.nevermind_retry):
+        if not engine._alive():
+            return False
+        if not wait_for_menu_page(engine, "root", cfg.root_menu_timeout):
+            return _wait_dialogue_closed(engine, cfg.nevermind_retry)
+        if click_menu_action(engine, "root", "nevermind") is False:
+            continue
+        if _wait_dialogue_closed(engine, cfg.nevermind_retry):
             return True
         # If the row is still visible, it was not yet accepted. Re-assert only
         # after a measured retry window; never burst-click a moving menu.
@@ -944,7 +1012,7 @@ def leave_dialogue(engine, tries: int = 3) -> bool:
     if in_dialogue(engine):
         engine.log("[shop] could not close the dialogue — stopping this shop "
                    "route rather than moving and losing the NPC position")
-    return not in_dialogue(engine)
+    return False
 
 
 def buy(engine, amount: int, first_time: bool = False) -> bool:
@@ -975,7 +1043,9 @@ def buy(engine, amount: int, first_time: bool = False) -> bool:
 
     def fail(why: str) -> bool:
         log(f"[shop] FAILED: {why} — no bait bought")
-        _recover(engine)
+        if not _recover(engine) or not engine._alive():
+            engine.stop()
+            return False
         # Always hand back a fishable state: rod in hand, shift lock on, one
         # step off the NPC. Otherwise the next cast would click centre while
         # still in range and re-open the dialogue we just backed out of — or
@@ -1053,10 +1123,12 @@ def escape_dialogue(engine) -> bool:
     if not in_dialogue(engine):
         return False
     cfg = engine.cfg.shop
-    engine.log("[cast] a dialogue is open — closing it and stepping away")
+    engine.log("[cast] a dialogue is open; verifying its exit before fishing")
     # Clicking menu entries needs the cursor free.
     set_shift_lock(engine, False)
-    _recover(engine)
+    if not _recover(engine) or not engine._alive():
+        engine.stop()
+        return True
     # Toggle the rod: this is the known cure for the post-catch stuck state.
     set_rod(engine, False)
     set_rod(engine, True)
@@ -1068,36 +1140,31 @@ def escape_dialogue(engine) -> bool:
     return True
 
 
-def _recover(engine) -> None:
+def _recover(engine) -> bool:
     """Best effort: get out of whatever dialogue we are stuck in.
 
-    Clicking the craft window's Close, then the last menu entry ('Nevermind')
-    a couple of times, walks back out of every page of this NPC's tree. We
-    never press Escape — in Roblox that opens the game menu.
+    Close a detected craft window, then use the same verified exit as the
+    normal route. Unknown pages and failed captures must never become blind
+    clicks on an old Back/Nevermind coordinate.
     """
     cfg = engine.cfg.shop
     win = engine.window
     try:
+        if not engine._alive():
+            return False
         if craft_up(engine):
             x, y = _abs(win, cfg.craft_close)
             engine.mouse.click_at(x, y)
-            engine._sleep(0.5)
-        # Always send both — 'Back' then 'Nevermind'. Bailing out as soon as the
-        # button counter dipped was how the bot ended up half-way out of the
-        # tree: Back pressed, Nevermind never, dialogue left open. The counter
-        # is not reliable across window sizes, and an extra click on a menu that
-        # has already closed is harmless.
-        for _ in range(3):
-            if not engine._alive():
-                break
-            click_menu_item(engine, -1, "recovery Back/Nevermind")
-            engine._sleep(0.7)
-            if not in_dialogue(engine):
-                break
+            if not _wait_until(engine, lambda: not craft_up(engine), cfg.close_timeout):
+                return False
+        if not leave_dialogue(engine):
+            return False
         # Same post-dismiss lock as the normal exit.
         engine._sleep(cfg.after_nevermind)
-    except Exception:                        # recovery must never raise
-        pass
+        return engine._alive()
+    except Exception as exc:                 # recovery must never raise
+        engine.log(f"[shop] recovery could not verify closure: {exc}")
+        return False
 
 
 def enter_fishing_stance(engine) -> bool:
@@ -1132,6 +1199,8 @@ def establish_fishing_anchor(engine) -> bool:
                    "fishing loop")
         return False
     engine._sleep(engine.cfg.shop.after_nevermind)
+    if not engine._alive():
+        return False
     set_rod(engine, True)
     if not enter_fishing_stance(engine):
         engine.log("[start] Shift Lock did not engage — not starting the fishing loop")

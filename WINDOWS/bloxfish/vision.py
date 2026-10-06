@@ -837,12 +837,23 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
     Rather than attempting OCR, use the high-contrast white labels/icons and
     retain only two or more evenly-spaced rows in the lower-right UI region.
     This is intentionally a *positive* detector: uncertain frames return an
-    empty list, letting the legacy calibrated targets remain the fallback.
-    Compare dark panels with backed white labels so a partially merged panel
-    scan cannot hide the complete root page.
+    empty list and cannot authorize a named action on an unconfirmed page.
+    Dark panels are backing evidence only: dock/scenery bands can have the
+    same shape. Every accepted row must contain visible label/icon pixels.
+    This also lets a complete label stack survive merged translucent panels.
     """
     h, w = img.shape[:2]
-    panels = _find_menu_panels(img)
+    if h < 30 or w < 60:
+        return []
+    # A mastery/ability HUD can enter the right edge of a calibrated NPC box.
+    # Its clipped words must not become menu rows. Use the actual capture
+    # boundary, not the inner scan margin, and require dark backing so bright
+    # water beyond a translucent menu is not mistaken for a clipped glyph.
+    edge = img[:, w - 2:w]
+    edge_white = (edge.min(axis=2) > 185).any(axis=1)
+    edge_back = cv2.cvtColor(img[:, w - 18:w], cv2.COLOR_BGR2GRAY) < 90
+    edge_dark = cv2.blur(edge_back.mean(axis=1).astype(np.float32)[:, None],
+                        (1, 35))[:, 0] >= .25
     # The normal desktop UI is lower-right, but the supplied Update 30 footage
     # proves that Roblox's UI scale can make the exact same stack fill most of
     # the screen.  Scan the full possible panel region, then reject short
@@ -850,7 +861,7 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
     x0, x1 = int(w * 0.10), int(w * 0.98)
     y0, y1 = int(h * 0.02), int(h * 0.99)
     if x1 - x0 < 40 or y1 - y0 < 40:
-        return panels
+        return []
 
     b, g, r = _split(img[y0:y1, x0:x1])
     # Label/icon white stays bright even though the menu panels themselves are
@@ -887,6 +898,10 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
             # A pointer over the last label extends its white band slightly.
             # Keep it eligible; regular row spacing below remains required.
             if h * 0.008 <= end - start <= h * 0.20:
+                if np.count_nonzero(edge_white[y0 + start:y0 + end]
+                                    & edge_dark[y0 + start:y0 + end]) >= 3:
+                    start = None
+                    continue
                 ys, xs = np.where(white[start:end])
                 # A player-list row can be white and evenly spaced too, but
                 # it is much narrower than even the shortest NPC action. This
@@ -904,7 +919,7 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
             start = None
 
     if len(bands) < 2:
-        return panels
+        return []
     # Keep the longest run with *consistent* button spacing. A calibration or
     # debug overlay can paint a wide white label immediately above the menu;
     # accepting it as a fifth row shifts every live click by one. The real NPC
@@ -933,11 +948,10 @@ def find_falling_menu_buttons(img: np.ndarray) -> list[MenuButton]:
                 continue
             if len(candidate) > len(best):
                 best = candidate
-    # Transparent panels over a dark dock can merge at their edges, leaving
-    # only two plausible bands on a four-row root menu (issue #38). Compare
-    # both witnesses before accepting that partial scan. A fuller, regularly
-    # spaced label stack wins; otherwise keep the stable panel centres.
-    return best if len(best) > len(panels) and len(best) >= 2 else panels
+    # A plain dark band is not a clickable UI witness. Returning panel-only
+    # centres here used to keep a closed dialogue "open" over dark scenery
+    # and redirect Nevermind retries into that scenery (issue #38).
+    return best
 
 def menu_button_count(img: np.ndarray) -> int:
     """Number of NPC dialogue buttons visible in `img` (a grab of the menu ROI).
