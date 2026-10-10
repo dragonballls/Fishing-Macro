@@ -175,6 +175,7 @@ def main() -> int:
                 if state.take_calibration_request():
                     if calibrate_gauge(sct, config):
                         history.clear()
+                        was_visible = False
                         consumed_this_turn = False
                         miss_count = 0
                         vision = vision_config(config)
@@ -210,6 +211,11 @@ def main() -> int:
                     reading = detect_gauge(crop, vision)
                 except Exception as exc:  # noqa: BLE001 - screen APIs can raise platform-specific exceptions
                     state.set_armed(False)
+                    history.clear()
+                    was_visible = False
+                    miss_count = 0
+                    # Keep consumed_this_turn unchanged: a capture failure after a
+                    # successful click must not permit a duplicate click this turn.
                     warning_time = time.perf_counter()
                     if warning_time - last_capture_warning >= 2.0:
                         print(f"[screen] capture failed: {exc}; press F6 to recalibrate")
