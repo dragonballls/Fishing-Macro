@@ -1,50 +1,64 @@
-# Fishing Macro
+# Sharkman Master Fish Fight Macro
 
-An auto-fisher for the Blox Fruits fishing minigame. It reads the screen, plays
-the reel minigame, buys bait when it runs low, and sells the catch — driven by
-what's on screen (colors and shapes), not fixed timings, so it adapts to
-different rods, lighting and times of day.
+A fresh Windows-first screen macro aimed specifically at the Fish Fight gauge used by the Sharkman Master Headband challenge in Blox Fruits. This is not a fishing macro.
 
-The project is split by platform:
+It watches the visible moving tick and green target zone inside a gauge area you calibrate, predicts short-term alignment, and (when armed) taps **Space** once for the current player turn. In the client source mirror I inspected, Space is bound to the same Jump input as the Fish Fight action. The tool only reads desktop pixels and sends normal keyboard input; it does not inject into Roblox, read process memory, call game remotes, or modify game files.
 
-## 🪟 [`WINDOWS/`](WINDOWS/README.md) — the main version
+> **Important limitation:** This is a new implementation based on the visible gauge mechanics, not a live-tested guarantee. The Black Headband stage has narrow timing windows and the game may apply network/server-side success rules. Test with dry-run and lower stages first. A screen macro cannot promise a win or prevent game-side failure.
 
-Everything you need on Windows. Download this repository (green **Code** button →
-**Download ZIP**), unzip it, then open the **`Windows`** folder and:
+## Setup (Windows)
 
-- double-click **`easy_run.py`**, or
-- for the reliable path, open **PowerShell or Windows Terminal as
-  administrator**, change to the `WINDOWS` folder, and run
-  `python easy_run.py`. Why: if Roblox is elevated and the macro isn't, Windows
-  drops its input and the bar drifts off and gives up.
+1. Install **Python 3.12** from [python.org](https://www.python.org/downloads/) and enable **Add Python to PATH**.
+2. Download this repository as a ZIP and extract it.
+3. Open PowerShell in the extracted folder and run:
 
-Full setup, calibration, options, and troubleshooting are in
-**[`WINDOWS/README.md`](WINDOWS/README.md)**.
+        py -3.12 -m venv .venv
+        .\.venv\Scripts\python -m pip install --upgrade pip
+        .\.venv\Scripts\python -m pip install -r requirements.txt
+        .\.venv\Scripts\python fishfight_macro.py
 
-**Want to fish without an NPC?** Select **Don't buy** in Setup. Fish-only mode
-skips automatic buying/selling, NPC dialogue/movement, and Shift Lock checks.
-Choose your fishing spot, aim, and Shift Lock state yourself before F2. Fishing
-detectors and the safety watchdog remain active. This mode is shared by Windows
-and Linux/Sober.
+4. Start the Sharkman Master Fish Fight manually. When the gauge is visible, press **F6** and drag a rectangle tightly around the full moving meter track. Include both the green target band and the moving white tick; leave out other text, health bars, and buttons. Press Enter to save. Calibration is written to local config.json and is not committed.
+5. Leave **dry_run** set to **true** initially. Press **F8** to show the detector preview, then **F7** to arm. In dry-run mode it logs when it would press Space but does not send input. Verify the white line tracks the moving tick and the green rectangle overlays the target zone. Press Esc to disarm.
+6. When detection looks correct, close the app, change the dry_run setting from true to false in config.json, restart it, and explicitly press F7 to arm. Test on a lower stage before attempting the Black Headband streak.
 
-> **Do not assume an antivirus or download warning is a false positive.**
-> Screen capture and automated input can attract heuristic warnings, but that
-> does not establish the cause of a particular alert. Download from this
-> repository and inspect the source and the warning before allowing anything.
-> The macro is readable Python, with no bundled Windows executable; Linux also
-> includes readable setup shell/rules files. Python dependencies are installed
-> separately. See `WINDOWS/README.md` for details.
+## Hotkeys
 
-## 🐧 [`LINUX/`](LINUX/README_LINUX.md) — experimental (Sober)
+| Key | Action |
+|---|---|
+| **F6** | Disarm and calibrate the gauge rectangle |
+| **F7** | Arm/disarm; starts disarmed every launch |
+| **F8** | Show/hide the visual detector preview |
+| **Esc** | Immediately disarm |
+| **F9** | Exit the app |
 
-Runs the **same** macro on Linux against Roblox via
-[Sober](https://sober.vinegarhq.org/) (X11 sessions), swapping only the
-input/window layer for a `uinput` backend. It reuses the shared core in
-`WINDOWS/` — the detection/control code is cross-platform; only `inputs.py` has a
-Windows branch. Setup and the current limitations are in
-**[`LINUX/README_LINUX.md`](LINUX/README_LINUX.md)**.
+The app only presses Space when all of these are true: (1) the gauge has a credible green band and white tick, (2) enough recent frames exist to estimate movement, (3) a predicted near-term alignment is inside the central portion of the green band, (4) the app is armed, and (5) a Roblox-titled window is active. It sends no more than one Space per detected gauge; the gauge must disappear before another turn can trigger.
 
----
+## Configuration and tuning
 
-*Personal project shared as-is. Automating a game may be against its rules; use
-at your own risk.*
+config.json is created on first launch and is intentionally ignored by Git. You can adjust the HSV thresholds if green/white detection is wrong:
+
+- **green_h_min**, **green_h_max**, **green_s_min**, **green_v_min**: green target-zone detection
+- **white_s_max**, **white_v_min**: white tick detection
+- **zone_row_fraction**, **tick_row_fraction**: minimum row coverage inside the calibrated crop
+- **poll_hz**: screen polling rate (clamped to 20–180)
+- **prediction_horizon_s**: short prediction horizon
+- **press_lead_s**: how early a predicted alignment may trigger a press (clamped to 12–45 ms)
+- **dry_run**: true logs without sending Space; false sends Space when armed
+
+If the preview misses the gauge or selects the wrong white feature, disarm, recalibrate more tightly, and adjust thresholds incrementally. Do not leave automation armed while switching windows. Esc disarms immediately.
+
+## Tests
+
+Unit tests use synthetic images and known trajectories. They validate detector behavior and timing prediction, but cannot substitute for a live Roblox test or confirm a successful win. Run:
+
+        python -m unittest discover -s tests -v
+
+GitHub Actions compiles the Python files, runs the unit tests, and packages a source ZIP artifact.
+
+## Safety and scope
+
+- Starts disarmed and defaults to dry-run.
+- Uses ordinary screen capture and a normal Space key press only.
+- Does not automate accepting the quest, selecting fish, clicking Continue, or leaving/restarting a challenge; those remain manual.
+- Does not read memory, inject code, change game files, or invoke Roblox remotes.
+- Game rules may prohibit automation; use only if permitted by the game's rules.
