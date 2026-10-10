@@ -13,6 +13,8 @@ CONFIG_PATH = ROOT / "config.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "roi": None,
+    "action_point": None,
+    "input_mode": "spacebar",
     "dry_run": True,
     "poll_hz": 90,
     "prediction_horizon_s": 0.45,
@@ -114,6 +116,30 @@ def normalize_config(loaded: object) -> tuple[dict[str, Any], list[str]]:
             warnings.append("ROI is malformed or outside safe size limits; dry_run reset to true; recalibrate with F6")
         else:
             config["roi"] = {key: roi[key] for key in required}
+
+    mode = config.get("input_mode")
+    if mode not in ("spacebar", "mouse_click"):
+        config["input_mode"] = "spacebar"
+        warnings.append("input_mode must be 'spacebar' or 'mouse_click'; using 'spacebar'")
+
+    point = config.get("action_point")
+    if point is not None:
+        valid_point = (
+            isinstance(point, dict)
+            and type(point.get("x")) is int
+            and type(point.get("y")) is int
+            and abs(point.get("x", 0)) <= 100_000
+            and abs(point.get("y", 0)) <= 100_000
+        )
+        if not valid_point:
+            config["action_point"] = None
+            warnings.append("action_point is malformed; press F5 to calibrate the click target")
+        else:
+            config["action_point"] = {"x": point["x"], "y": point["y"]}
+
+    if config["input_mode"] == "mouse_click" and config["action_point"] is None:
+        config["input_mode"] = "spacebar"
+        warnings.append("mouse_click was selected without a calibrated target; using spacebar until F5 calibration")
 
     _normalise_int(config, "poll_hz", 20, 180, warnings)
     _normalise_float(config, "prediction_horizon_s", 0.05, 2.0, warnings)
