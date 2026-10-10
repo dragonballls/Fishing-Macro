@@ -2,12 +2,12 @@
 
 Hotkeys:
   F6  Calibrate the gauge rectangle
-  F7  Arm/disarm automatic left-clicks at the current cursor (starts disarmed)
+  F7  Arm/disarm timed Spacebar presses (starts disarmed)
   F8  Toggle the visual detector preview
   Esc Disarm immediately
   F9  Exit
 
-Only visible pixels and a normal left-click at the current cursor are used.
+Only visible pixels and a standard Spacebar input event are used.
 No client injection, remote calls, memory reading, or game-file modification.
 """
 from __future__ import annotations
@@ -18,12 +18,12 @@ import time
 import cv2
 import mss
 import numpy as np
-import pyautogui
 from pynput import keyboard
 
 from fishfight.timing import MotionHistory, time_to_alignment
 from fishfight.vision import detect_gauge, draw_diagnostics
-from fishfight.input_gate import ClickOutcome, click_current_cursor_if_armed
+from fishfight.input_events import press_spacebar
+from fishfight.input_gate import InputOutcome, send_input_if_armed
 from fishfight.settings import CONFIG_PATH, load_config, save_config, vision_config
 
 
@@ -147,7 +147,7 @@ def start_hotkeys(state: AppState) -> keyboard.Listener:
 
 def main() -> int:
     print("Sharkman Master Fish Fight Macro")
-    print("F6 calibrate | F7 arm/disarm | F8 preview | Esc disarm | F9 exit")
+    print("F6 calibrate | F7 arm/disarm (Spacebar) | F8 preview | Esc disarm | F9 exit")
     config = load_config()
     state = AppState()
     listener: keyboard.Listener | None = None
@@ -162,8 +162,6 @@ def main() -> int:
     poll_hz = max(20, min(180, int(config.get("poll_hz", 90))))
     loop_period = 1.0 / poll_hz
     vision = vision_config(config)
-    pyautogui.FAILSAFE = True
-    pyautogui.PAUSE = 0.0
 
     try:
         listener = start_hotkeys(state)
@@ -265,36 +263,28 @@ def main() -> int:
                                         state.armed = False
                                 if lost_focus:
                                     if now - last_focus_warning > 2.0:
-                                        print("[safety] Roblox isn't the active window; macro disarmed and no click sent.")
+                                        print("[safety] Roblox isn't the active window; macro disarmed and no input sent.")
                                         last_focus_warning = now
                                 elif still_armed:
-                                    print(f"[dry-run] would left-click at cursor in {eta * 1000:.1f} ms (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f})")
+                                    print(f"[dry-run] would press Spacebar in {eta * 1000:.1f} ms (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f})")
                                     consumed_this_turn = True
                             else:
                                 input_sent = False
                                 lost_focus = False
                                 try:
-                                    outcome = click_current_cursor_if_armed(
-                                        state, roblox_has_focus, pyautogui.click
+                                    outcome = send_input_if_armed(
+                                        state, roblox_has_focus, press_spacebar
                                     )
-                                    input_sent = outcome is ClickOutcome.SENT
-                                    lost_focus = outcome is ClickOutcome.FOCUS_LOST
+                                    input_sent = outcome is InputOutcome.SENT
+                                    lost_focus = outcome is InputOutcome.FOCUS_LOST
                                     if input_sent:
                                         consumed_this_turn = True
                                     if lost_focus:
                                         if now - last_focus_warning > 2.0:
-                                            print("[safety] Roblox isn't the active window; macro disarmed and no click sent.")
+                                            print("[safety] Roblox isn't the active window; macro disarmed and no input sent.")
                                             last_focus_warning = now
                                     elif input_sent:
-                                        try:
-                                            x, y = pyautogui.position()
-                                        except Exception as exc:  # click already sent; never retry this turn
-                                            print(f"[input] left-click sent at cursor; position unavailable: {exc}")
-                                        else:
-                                            print(f"[input] left-click sent at cursor ({x}, {y}; tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f}, eta={eta * 1000:.1f} ms)")
-                                except pyautogui.FailSafeException:
-                                    state.set_armed(False)
-                                    print("[safety] PyAutoGUI fail-safe triggered; macro disarmed.")
+                                        print(f"[input] Spacebar press sent (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f}, eta={eta * 1000:.1f} ms)")
                                 except Exception as exc:
                                     state.set_armed(False)
                                     print(f"[safety] input failed; macro disarmed: {exc}")
