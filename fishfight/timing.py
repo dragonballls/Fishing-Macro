@@ -117,6 +117,12 @@ def time_to_alignment(
     if velocity is None:
         return None
     tick_v, zone_v = velocity
+    # A static bright feature can appear aligned with a green patch outside the
+    # active minigame. Require measurable tick movement before any trigger.
+    # Below 0.05 normalized units/second is under ~0.3 px/frame on a 548 px bar
+    # at 90 Hz, so it is not reliable motion evidence.
+    if abs(tick_v) < 0.05:
+        return None
     zone_half = reading.zone_half_height
     if zone_half <= 0:
         return None

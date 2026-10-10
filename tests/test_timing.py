@@ -16,6 +16,13 @@ class TimingTests(unittest.TestCase):
         history.add(1.0, reading)
         self.assertIsNone(time_to_alignment(reading, history))
 
+    def test_stationary_aligned_feature_is_not_a_trigger(self):
+        history = MotionHistory()
+        reading = GaugeReading(0.50, 0.48, 0.52, 0.8, 0.9)
+        for index in range(6):
+            history.add(index * 0.02, reading)
+        self.assertIsNone(time_to_alignment(reading, history))
+
     def test_predicts_entry_into_target_zone(self):
         history = MotionHistory()
         for i in range(5):
