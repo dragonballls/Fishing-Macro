@@ -23,6 +23,7 @@ from pynput import keyboard
 
 from fishfight.timing import MotionHistory, time_to_alignment
 from fishfight.vision import detect_gauge, draw_diagnostics
+from fishfight.input_gate import ClickOutcome, click_current_cursor_if_armed
 from fishfight.settings import CONFIG_PATH, load_config, save_config, vision_config
 
 
@@ -273,18 +274,13 @@ def main() -> int:
                                 input_sent = False
                                 lost_focus = False
                                 try:
-                                    # Serialize the final armed/focus check and click
-                                    # against hotkey disarm requests, preventing a late
-                                    # click after Esc/F6/F9 has already taken effect.
-                                    with state.lock:
-                                        if state.armed:
-                                            if not roblox_has_focus():
-                                                state.armed = False
-                                                lost_focus = True
-                                            else:
-                                                pyautogui.click()
-                                                consumed_this_turn = True
-                                                input_sent = True
+                                    outcome = click_current_cursor_if_armed(
+                                        state, roblox_has_focus, pyautogui.click
+                                    )
+                                    input_sent = outcome is ClickOutcome.SENT
+                                    lost_focus = outcome is ClickOutcome.FOCUS_LOST
+                                    if input_sent:
+                                        consumed_this_turn = True
                                     if lost_focus:
                                         if now - last_focus_warning > 2.0:
                                             print("[safety] Roblox isn't the active window; macro disarmed and no click sent.")
