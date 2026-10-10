@@ -67,6 +67,16 @@ class TimingTests(unittest.TestCase):
         history.add(0.8, GaugeReading(0.5, 0.44, 0.50, 0.5, 0.9))
         self.assertIsNone(time_to_alignment(GaugeReading(0.5, 0.44, 0.50, 0.5, 0.9), history))
 
+    def test_resets_motion_history_after_a_direction_reversal(self):
+        history = MotionHistory()
+        points = [0.94, 0.96, 0.98, 0.96, 0.94, 0.92]
+        for index, tick in enumerate(points):
+            history.add(index * 0.02, GaugeReading(tick, 0.48, 0.52, 0.8, 0.9))
+        velocity = history.velocities()
+        self.assertIsNotNone(velocity)
+        assert velocity is not None
+        self.assertLess(velocity[0], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

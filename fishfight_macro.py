@@ -12,11 +12,8 @@ No client injection, remote calls, memory reading, or game-file modification.
 """
 from __future__ import annotations
 
-import json
 import threading
 import time
-from pathlib import Path
-from typing import Any
 
 import cv2
 import mss
@@ -25,25 +22,8 @@ import pyautogui
 from pynput import keyboard
 
 from fishfight.timing import MotionHistory, time_to_alignment
-from fishfight.vision import VisionConfig, detect_gauge, draw_diagnostics
-
-ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = ROOT / "config.json"
-DEFAULT_CONFIG: dict[str, Any] = {
-    "roi": None,
-    "dry_run": True,
-    "poll_hz": 90,
-    "prediction_horizon_s": 0.45,
-    "press_lead_s": 0.020,
-    "green_h_min": 35,
-    "green_h_max": 95,
-    "green_s_min": 70,
-    "green_v_min": 70,
-    "white_s_max": 80,
-    "white_v_min": 200,
-    "zone_row_fraction": 0.20,
-    "tick_row_fraction": 0.08,
-}
+from fishfight.vision import detect_gauge, draw_diagnostics
+from fishfight.settings import CONFIG_PATH, load_config, save_config, vision_config
 
 
 class AppState:
@@ -89,32 +69,9 @@ class AppState:
             self.armed = False
 
 
-def load_config() -> dict[str, Any]:
-    config = DEFAULT_CONFIG.copy()
-    if CONFIG_PATH.exists():
-        try:
-            loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                config.update(loaded)
-        except (OSError, json.JSONDecodeError) as exc:
-            print(f"[config] couldn't read {CONFIG_PATH}: {exc}; using defaults")
-    else:
-        save_config(config)
-    return config
-
-
-def save_config(config: dict[str, Any]) -> None:
-    CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-
-
-def vision_config(config: dict[str, Any]) -> VisionConfig:
-    keys = VisionConfig.__dataclass_fields__.keys()
-    return VisionConfig(**{key: config[key] for key in keys if key in config})
-
-
-def calibrate_gauge(sct: mss.mss, config: dict[str, Any]) -> bool:
-    """Let the user mark the full moving meter on a captured desktop image."""
-    monitor = sct.monitors[1]
+def calibrate_gauge(sct: mss.MSS, config: dict[str, Any]) -> bool:
+    """Let the user mark the full moving meter on the virtual desktop."""
+    monitor = sct.monitors[0]
     desktop = np.asarray(sct.grab(monitor))[:, :, :3]
     height, width = desktop.shape[:2]
     scale = min(1.0, 1500.0 / width, 850.0 / height)
@@ -148,7 +105,17 @@ def roblox_has_focus() -> bool:
 
 
 def start_hotkeys(state: AppState) -> keyboard.Listener:
+    held_hotkeys: set[keyboard.Key | keyboard.KeyCode] = set()
+
     def on_press(key: keyboard.Key | keyboard.KeyCode | None):
+        if key not in {
+            keyboard.Key.f6, keyboard.Key.f7, keyboard.Key.f8,
+            keyboard.Key.esc, keyboard.Key.f9,
+        }:
+            return None
+        if key in held_hotkeys:
+            return None
+        held_hotkeys.add(key)
         if key == keyboard.Key.f6:
             state.request_calibration()
             print("[hotkey] F6: calibration requested; macro disarmed")
@@ -167,7 +134,11 @@ def start_hotkeys(state: AppState) -> keyboard.Listener:
             return False
         return None
 
-    listener = keyboard.Listener(on_press=on_press)
+    def on_release(key: keyboard.Key | keyboard.KeyCode | None):
+        held_hotkeys.discard(key)
+        return None
+
+    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.daemon = True
     listener.start()
     return listener
@@ -178,13 +149,14 @@ def main() -> int:
     print("F6 calibrate | F7 arm/disarm | F8 preview | Esc disarm | F9 exit")
     config = load_config()
     state = AppState()
-    listener = start_hotkeys(state)
+    listener: keyboard.Listener | None = None
     history = MotionHistory()
     consumed_this_turn = False
     miss_count = 0
     was_visible = False
     last_focus_warning = 0.0
     last_debug_time = 0.0
+    last_capture_warning = -1e9
     last_printed_status: str | None = None
     poll_hz = max(20, min(180, int(config.get("poll_hz", 90))))
     loop_period = 1.0 / poll_hz
@@ -193,7 +165,8 @@ def main() -> int:
     pyautogui.PAUSE = 0.0
 
     try:
-        with mss.mss() as sct:
+        listener = start_hotkeys(state)
+        with mss.MSS() as sct:
             while True:
                 loop_start = time.perf_counter()
                 armed, debug, _, quitting = state.snapshot()
@@ -216,13 +189,32 @@ def main() -> int:
                     continue
 
                 try:
-                    shot = sct.grab({key: int(roi[key]) for key in ("left", "top", "width", "height")})
+                    bounds = {key: roi[key] for key in ("left", "top", "width", "height")}
+                    desktop = sct.monitors[0]
+                    if (
+                        bounds["left"] < desktop["left"]
+                        or bounds["top"] < desktop["top"]
+                        or bounds["left"] + bounds["width"] > desktop["left"] + desktop["width"]
+                        or bounds["top"] + bounds["height"] > desktop["top"] + desktop["height"]
+                    ):
+                        config["roi"] = None
+                        state.set_armed(False)
+                        history.clear()
+                        was_visible = False
+                        consumed_this_turn = False
+                        save_config(config)
+                        print("[config] saved ROI is outside the virtual desktop; press F6 to recalibrate")
+                        continue
+                    shot = sct.grab(bounds)
                     crop = np.asarray(shot)[:, :, :3]
                     reading = detect_gauge(crop, vision)
                 except Exception as exc:  # noqa: BLE001 - screen APIs can raise platform-specific exceptions
-                    print(f"[screen] capture failed: {exc}; press F6 to recalibrate")
                     state.set_armed(False)
-                    time.sleep(0.25)
+                    warning_time = time.perf_counter()
+                    if warning_time - last_capture_warning >= 2.0:
+                        print(f"[screen] capture failed: {exc}; press F6 to recalibrate")
+                        last_capture_warning = warning_time
+                    time.sleep(0.1)
                     continue
 
                 now = time.perf_counter()
@@ -249,27 +241,54 @@ def main() -> int:
                         cv2.waitKey(1)
                         last_debug_time = now
 
-                    if armed and not consumed_this_turn:
+                    if armed and not consumed_this_turn and state.snapshot()[0]:
                         eta = time_to_alignment(
                             reading,
                             history,
-                            horizon_s=float(config.get("prediction_horizon_s", 0.45)),
+                            horizon_s=config["prediction_horizon_s"],
                         )
-                        lead_window = max(0.012, min(0.045, float(config.get("press_lead_s", 0.020))))
+                        lead_window = config["press_lead_s"]
                         if eta is not None and eta <= lead_window:
-                            if not roblox_has_focus():
-                                if now - last_focus_warning > 2.0:
-                                    print("[safety] Roblox isn't the active window; no click sent. Focus Roblox before arming.")
-                                    last_focus_warning = now
-                            elif bool(config.get("dry_run", True)):
-                                print(f"[dry-run] would press Space in {eta * 1000:.1f} ms (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f})")
-                                consumed_this_turn = True
-                            else:
-                                try:
-                                    pyautogui.click()
-                                    x, y = pyautogui.position()
-                                    print(f"[input] left-click sent at cursor ({x}, {y}; tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f}, eta={eta * 1000:.1f} ms)")
+                            if config["dry_run"]:
+                                with state.lock:
+                                    still_armed = state.armed
+                                    lost_focus = still_armed and not roblox_has_focus()
+                                    if lost_focus:
+                                        state.armed = False
+                                if lost_focus:
+                                    if now - last_focus_warning > 2.0:
+                                        print("[safety] Roblox isn't the active window; macro disarmed and no click sent.")
+                                        last_focus_warning = now
+                                elif still_armed:
+                                    print(f"[dry-run] would left-click at cursor in {eta * 1000:.1f} ms (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f})")
                                     consumed_this_turn = True
+                            else:
+                                input_sent = False
+                                lost_focus = False
+                                try:
+                                    # Serialize the final armed/focus check and click
+                                    # against hotkey disarm requests, preventing a late
+                                    # click after Esc/F6/F9 has already taken effect.
+                                    with state.lock:
+                                        if state.armed:
+                                            if not roblox_has_focus():
+                                                state.armed = False
+                                                lost_focus = True
+                                            else:
+                                                pyautogui.click()
+                                                consumed_this_turn = True
+                                                input_sent = True
+                                    if lost_focus:
+                                        if now - last_focus_warning > 2.0:
+                                            print("[safety] Roblox isn't the active window; macro disarmed and no click sent.")
+                                            last_focus_warning = now
+                                    elif input_sent:
+                                        try:
+                                            x, y = pyautogui.position()
+                                        except Exception as exc:  # click already sent; never retry this turn
+                                            print(f"[input] left-click sent at cursor; position unavailable: {exc}")
+                                        else:
+                                            print(f"[input] left-click sent at cursor ({x}, {y}; tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f}, eta={eta * 1000:.1f} ms)")
                                 except pyautogui.FailSafeException:
                                     state.set_armed(False)
                                     print("[safety] PyAutoGUI fail-safe triggered; macro disarmed.")
@@ -284,7 +303,8 @@ def main() -> int:
         print("\n[exit] interrupted")
     finally:
         state.set_armed(False)
-        listener.stop()
+        if listener is not None:
+            listener.stop()
         cv2.destroyAllWindows()
     return 0
 

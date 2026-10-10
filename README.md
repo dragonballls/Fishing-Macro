@@ -31,7 +31,7 @@ It watches the visible moving tick and green target zone inside a gauge area you
 | **Esc** | Immediately disarm |
 | **F9** | Exit the app |
 
-The app only left-clicks at the current cursor position when all of these are true: (1) the gauge has a credible green band and white tick, (2) enough recent frames exist to estimate movement, (3) a predicted near-term alignment is inside the central portion of the green band, (4) the app is armed, and (5) a Roblox-titled window is active. It sends no more than one Space per detected gauge; the gauge must disappear before another turn can trigger.
+The app only left-clicks at the current cursor position when all of these are true: (1) the gauge has a credible green band and white tick, (2) enough recent frames exist to estimate movement, (3) a predicted near-term alignment is inside the central portion of the green band, (4) the app is armed, and (5) a Roblox-titled window is active. It sends no more than one left-click per detected gauge; the gauge must disappear before another turn can trigger.
 
 ## Configuration and tuning
 
@@ -42,10 +42,10 @@ config.json is created on first launch and is intentionally ignored by Git. You 
 - **zone_row_fraction**, **tick_row_fraction**: minimum row coverage inside the calibrated crop
 - **poll_hz**: screen polling rate (clamped to 20–180)
 - **prediction_horizon_s**: short prediction horizon
-- **press_lead_s**: how early a predicted alignment may trigger a press (clamped to 12–45 ms)
+- **press_lead_s**: how early a predicted alignment may trigger a click (clamped to 12–45 ms)
 - **dry_run**: true logs without clicking; false sends a left-click at the current cursor when armed
 
-If the preview misses the gauge or selects the wrong white feature, disarm, recalibrate more tightly, and adjust thresholds incrementally. Do not leave automation armed while switching windows. Esc disarms immediately.
+If the preview misses the gauge or selects the wrong white feature, disarm, recalibrate more tightly, and adjust thresholds incrementally. The app disarms when a trigger is reached while Roblox is not the active window. Esc and F6 disarm immediately. Configuration is range/type checked; malformed ROIs require recalibration, and writes are atomic.
 
 ## Tests
 
@@ -58,7 +58,7 @@ GitHub Actions compiles the Python files, runs the unit tests, and packages a so
 ## Safety and scope
 
 - Starts disarmed and defaults to dry-run.
-- Uses ordinary screen capture and a normal Space key press only.
+- Uses ordinary screen capture and a normal left-click at the current cursor position only.
 - Does not automate accepting the quest, selecting fish, clicking Continue, or leaving/restarting a challenge; those remain manual.
 - Does not read memory, inject code, change game files, or invoke Roblox remotes.
 - Game rules may prohibit automation; use only if permitted by the game's rules.

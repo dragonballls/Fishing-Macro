@@ -24,7 +24,27 @@ class MotionHistory:
         self.samples.clear()
 
     def add(self, timestamp: float, reading: GaugeReading) -> None:
-        self.samples.append(Sample(timestamp, reading.tick_y, reading.zone_center))
+        sample = Sample(timestamp, reading.tick_y, reading.zone_center)
+        if len(self.samples) >= 2:
+            previous = self.samples[-1]
+            before = self.samples[-2]
+            reversed_direction = False
+            for field in ("tick_y", "zone_center"):
+                prior_delta = getattr(previous, field) - getattr(before, field)
+                current_delta = getattr(sample, field) - getattr(previous, field)
+                # Ignore sub-pixel jitter, but don't regress velocity across a
+                # genuine direction reversal at a track boundary.
+                if (
+                    abs(prior_delta) >= 0.002
+                    and abs(current_delta) >= 0.002
+                    and prior_delta * current_delta < 0
+                ):
+                    reversed_direction = True
+                    break
+            if reversed_direction:
+                self.samples.clear()
+                self.samples.append(previous)
+        self.samples.append(sample)
 
     def _slope(self, field: str) -> float | None:
         if len(self.samples) < 3:
