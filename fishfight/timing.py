@@ -1,6 +1,7 @@
 """Prediction utilities for the moving tick and green target zone."""
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 from typing import Deque
@@ -30,6 +31,10 @@ class MotionHistory:
             return None
         ts = [getattr(s, "timestamp") for s in self.samples]
         ys = [getattr(s, field) for s in self.samples]
+        if any(not math.isfinite(value) for value in (*ts, *ys)):
+            return None
+        if any(later <= earlier for earlier, later in zip(ts, ts[1:])):
+            return None
         t0 = ts[0]
         xs = [t - t0 for t in ts]
         mean_x = sum(xs) / len(xs)
@@ -69,13 +74,27 @@ def time_to_alignment(
 ) -> float | None:
     """Estimate time until the tick enters the central portion of the green zone.
 
-    The client animates the tick between about 0.02 and 0.98 and moves the target
-    zone between about 0.40 and 0.60. Those bounds are from the visible meter's
-    animation. Predictions are short and every frame is still re-read before any
-    key is sent.
+    Positions are normalized to the full calibrated track. Both features are
+    predicted within the track bounds; do not fold a valid green-zone reading
+    from the lower/upper part of the track into an invented central position.
     """
+    values = (
+        reading.tick_y, reading.zone_top, reading.zone_bottom,
+        horizon_s, step_s, safe_zone_fraction,
+    )
+    if any(not math.isfinite(value) for value in values):
+        return None
+    if not (0.02 <= reading.tick_y <= 0.98):
+        return None
+    if not (0.02 <= reading.zone_top < reading.zone_bottom <= 0.98):
+        return None
+    if horizon_s <= 0 or step_s <= 0:
+        return None
+    if not (0 < safe_zone_fraction <= 1):
+        return None
+
     velocity = history.velocities()
-    if velocity is None or horizon_s <= 0 or step_s <= 0:
+    if velocity is None:
         return None
     tick_v, zone_v = velocity
     zone_half = reading.zone_half_height
@@ -86,7 +105,7 @@ def time_to_alignment(
     for i in range(count):
         dt = i * step_s
         predicted_tick = reflect(reading.tick_y + tick_v * dt, 0.02, 0.98)
-        predicted_zone = reflect(reading.zone_center + zone_v * dt, 0.40, 0.60)
+        predicted_zone = reflect(reading.zone_center + zone_v * dt, 0.02, 0.98)
         if abs(predicted_tick - predicted_zone) <= tolerance:
             return dt
     return None

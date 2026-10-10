@@ -35,5 +35,38 @@ class TimingTests(unittest.TestCase):
         self.assertIsNone(time_to_alignment(current, history, horizon_s=0.08))
 
 
+    def test_does_not_fold_low_green_zone_into_central_track(self):
+        history = MotionHistory()
+        # A descending white tick and a green zone near the lower part of the
+        # bar must not be reflected from 0.184 to a fictional position near 0.584.
+        samples = [
+            (0.00, 0.627, 0.188),
+            (0.02, 0.624, 0.187),
+            (0.04, 0.621, 0.186),
+            (0.06, 0.618, 0.185),
+            (0.08, 0.615, 0.184),
+        ]
+        for timestamp, tick, zone in samples:
+            history.add(timestamp, GaugeReading(tick, zone - 0.02, zone + 0.02, 0.8, 0.9))
+        current = GaugeReading(0.615, 0.164, 0.204, 0.8, 0.9)
+        self.assertIsNone(time_to_alignment(current, history, horizon_s=0.30))
+
+    def test_rejects_invalid_or_non_finite_readings(self):
+        history = MotionHistory()
+        for i in range(4):
+            history.add(i * 0.02, GaugeReading(0.30 + i * 0.01, 0.44, 0.50, 0.5, 0.9))
+        invalid = GaugeReading(0.35, 0.95, 1.01, 0.5, 0.9)
+        self.assertIsNone(time_to_alignment(invalid, history))
+        non_finite = GaugeReading(float("nan"), 0.44, 0.50, 0.5, 0.9)
+        self.assertIsNone(time_to_alignment(non_finite, history))
+
+    def test_rejects_non_monotonic_history_timestamps(self):
+        history = MotionHistory()
+        history.add(1.0, GaugeReading(0.3, 0.44, 0.50, 0.5, 0.9))
+        history.add(0.9, GaugeReading(0.4, 0.44, 0.50, 0.5, 0.9))
+        history.add(0.8, GaugeReading(0.5, 0.44, 0.50, 0.5, 0.9))
+        self.assertIsNone(time_to_alignment(GaugeReading(0.5, 0.44, 0.50, 0.5, 0.9), history))
+
+
 if __name__ == "__main__":
     unittest.main()

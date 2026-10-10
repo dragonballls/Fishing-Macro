@@ -2,13 +2,13 @@
 
 Hotkeys:
   F6  Calibrate the gauge rectangle
-  F7  Arm/disarm automatic Space presses (starts disarmed)
+  F7  Arm/disarm automatic left-clicks at the current cursor (starts disarmed)
   F8  Toggle the visual detector preview
   Esc Disarm immediately
   F9  Exit
 
-Only visible pixels and normal keyboard input are used. No client injection,
-remote calls, memory reading, or game-file modification.
+Only visible pixels and a normal left-click at the current cursor are used.
+No client injection, remote calls, memory reading, or game-file modification.
 """
 from __future__ import annotations
 
@@ -259,15 +259,16 @@ def main() -> int:
                         if eta is not None and eta <= lead_window:
                             if not roblox_has_focus():
                                 if now - last_focus_warning > 2.0:
-                                    print("[safety] Roblox isn't the active window; no key sent. Focus Roblox before arming.")
+                                    print("[safety] Roblox isn't the active window; no click sent. Focus Roblox before arming.")
                                     last_focus_warning = now
                             elif bool(config.get("dry_run", True)):
                                 print(f"[dry-run] would press Space in {eta * 1000:.1f} ms (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f})")
                                 consumed_this_turn = True
                             else:
                                 try:
-                                    pyautogui.press("space")
-                                    print(f"[input] Space pressed (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f}, eta={eta * 1000:.1f} ms)")
+                                    pyautogui.click()
+                                    x, y = pyautogui.position()
+                                    print(f"[input] left-click sent at cursor ({x}, {y}; tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f}, eta={eta * 1000:.1f} ms)")
                                     consumed_this_turn = True
                                 except pyautogui.FailSafeException:
                                     state.set_armed(False)

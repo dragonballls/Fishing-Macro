@@ -2,7 +2,7 @@
 
 A fresh Windows-first screen macro aimed specifically at the Fish Fight gauge used by the Sharkman Master Headband challenge in Blox Fruits. This is not a fishing macro.
 
-It watches the visible moving tick and green target zone inside a gauge area you calibrate, predicts short-term alignment, and (when armed) taps **Space** once for the current player turn. In the client source mirror I inspected, Space is bound to the same Jump input as the Fish Fight action. The tool only reads desktop pixels and sends normal keyboard input; it does not inject into Roblox, read process memory, call game remotes, or modify game files.
+It watches the visible moving tick and green target zone inside a gauge area you calibrate, predicts short-term alignment, and (when armed) sends one normal left-click at the current mouse cursor position for the current player turn. It does not move the cursor. The tool only reads desktop pixels and sends standard mouse input; it does not inject into Roblox, read process memory, call game remotes, or modify game files.
 
 > **Important limitation:** This is a new implementation based on the visible gauge mechanics, not a live-tested guarantee. The Black Headband stage has narrow timing windows and the game may apply network/server-side success rules. Test with dry-run and lower stages first. A screen macro cannot promise a win or prevent game-side failure.
 
@@ -18,8 +18,8 @@ It watches the visible moving tick and green target zone inside a gauge area you
         .\.venv\Scripts\python fishfight_macro.py
 
 4. Start the Sharkman Master Fish Fight manually. When the gauge is visible, press **F6** and drag a rectangle tightly around the full moving meter track. Include both the green target band and the moving white tick; leave out other text, health bars, and buttons. Press Enter to save. Calibration is written to local config.json and is not committed.
-5. Leave **dry_run** set to **true** initially. Press **F8** to show the detector preview, then **F7** to arm. In dry-run mode it logs when it would press Space but does not send input. Verify the white line tracks the moving tick and the green rectangle overlays the target zone. Press Esc to disarm.
-6. When detection looks correct, close the app, change the dry_run setting from true to false in config.json, restart it, and explicitly press F7 to arm. Test on a lower stage before attempting the Black Headband streak.
+5. Leave **dry_run** set to **true** initially. Press **F8** to show the detector preview, then **F7** to arm. In dry-run mode it logs when it would click but does not send input. Verify the white line tracks the moving tick and the green rectangle overlays the target zone. Press Esc to disarm.
+6. When detection looks correct, close the app, change the dry_run setting from true to false in config.json, restart it, and explicitly press F7 to arm. The click occurs at the cursor's current position. Keep Roblox focused and place the cursor where the action should register. Use automation only where the game rules permit it.
 
 ## Hotkeys
 
@@ -31,7 +31,7 @@ It watches the visible moving tick and green target zone inside a gauge area you
 | **Esc** | Immediately disarm |
 | **F9** | Exit the app |
 
-The app only presses Space when all of these are true: (1) the gauge has a credible green band and white tick, (2) enough recent frames exist to estimate movement, (3) a predicted near-term alignment is inside the central portion of the green band, (4) the app is armed, and (5) a Roblox-titled window is active. It sends no more than one Space per detected gauge; the gauge must disappear before another turn can trigger.
+The app only left-clicks at the current cursor position when all of these are true: (1) the gauge has a credible green band and white tick, (2) enough recent frames exist to estimate movement, (3) a predicted near-term alignment is inside the central portion of the green band, (4) the app is armed, and (5) a Roblox-titled window is active. It sends no more than one Space per detected gauge; the gauge must disappear before another turn can trigger.
 
 ## Configuration and tuning
 
@@ -43,7 +43,7 @@ config.json is created on first launch and is intentionally ignored by Git. You 
 - **poll_hz**: screen polling rate (clamped to 20–180)
 - **prediction_horizon_s**: short prediction horizon
 - **press_lead_s**: how early a predicted alignment may trigger a press (clamped to 12–45 ms)
-- **dry_run**: true logs without sending Space; false sends Space when armed
+- **dry_run**: true logs without clicking; false sends a left-click at the current cursor when armed
 
 If the preview misses the gauge or selects the wrong white feature, disarm, recalibrate more tightly, and adjust thresholds incrementally. Do not leave automation armed while switching windows. Esc disarms immediately.
 
