@@ -81,7 +81,12 @@ def normalize_config(loaded: object) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
     config = dict(DEFAULT_CONFIG)
     if isinstance(loaded, dict):
-        config.update(loaded)
+        unknown_keys = sorted(set(loaded) - set(DEFAULT_CONFIG))
+        if unknown_keys:
+            warnings.append(f"ignored unknown setting(s): {', '.join(unknown_keys)}")
+        for key in DEFAULT_CONFIG:
+            if key in loaded:
+                config[key] = loaded[key]
     else:
         warnings.append("configuration root must be a JSON object; using defaults")
 
@@ -105,7 +110,8 @@ def normalize_config(loaded: object) -> tuple[dict[str, Any], list[str]]:
             )
         if not valid:
             config["roi"] = None
-            warnings.append("ROI is malformed or outside safe size limits; recalibrate with F6")
+            config["dry_run"] = True
+            warnings.append("ROI is malformed or outside safe size limits; dry_run reset to true; recalibrate with F6")
         else:
             config["roi"] = {key: roi[key] for key in required}
 
@@ -156,7 +162,7 @@ def load_config(path: str | Path = CONFIG_PATH) -> dict[str, Any]:
 
     try:
         loaded = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         print(f"[config] couldn't read {source}: {exc}; using safe in-memory defaults")
         return dict(DEFAULT_CONFIG)
 

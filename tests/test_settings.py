@@ -30,7 +30,7 @@ class SettingsTests(unittest.TestCase):
             "dry_run": False,
         })
         self.assertIsNone(config["roi"])
-        self.assertIs(config["dry_run"], False)
+        self.assertIs(config["dry_run"], True)
         self.assertTrue(any("ROI" in warning for warning in warnings))
 
     def test_valid_negative_monitor_origin_is_preserved(self):
@@ -89,6 +89,19 @@ class SettingsTests(unittest.TestCase):
             save_config(config, path)
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), config)
             self.assertFalse(path.with_name("config.json.tmp").exists())
+
+    def test_unknown_keys_are_ignored(self):
+        config, warnings = normalize_config({"unexpected": float("nan")})
+        self.assertNotIn("unexpected", config)
+        self.assertTrue(any("unknown setting" in warning for warning in warnings))
+
+    def test_invalid_utf8_falls_back_without_crashing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_bytes(b"\xff\xfe\xfa")
+            config = load_config(path)
+            self.assertTrue(config["dry_run"])
+            self.assertIsNone(config["roi"])
 
 
 if __name__ == "__main__":

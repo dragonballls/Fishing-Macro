@@ -199,12 +199,13 @@ def main() -> int:
                         or bounds["top"] + bounds["height"] > desktop["top"] + desktop["height"]
                     ):
                         config["roi"] = None
+                        config["dry_run"] = True
                         state.set_armed(False)
                         history.clear()
                         was_visible = False
                         consumed_this_turn = False
                         save_config(config)
-                        print("[config] saved ROI is outside the virtual desktop; press F6 to recalibrate")
+                        print("[config] saved ROI is outside the virtual desktop; dry_run reset to true; press F6 to recalibrate")
                         continue
                     shot = sct.grab(bounds)
                     crop = np.asarray(shot)[:, :, :3]
