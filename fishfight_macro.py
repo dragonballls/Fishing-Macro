@@ -22,7 +22,7 @@ from pynput import keyboard
 
 from fishfight.timing import MotionHistory, time_to_alignment
 from fishfight.vision import detect_gauge, draw_diagnostics
-from fishfight.input_events import press_spacebar
+from fishfight.input_events import spacebar_down, spacebar_up
 from fishfight.input_gate import InputOutcome, send_input_if_armed
 from fishfight.settings import CONFIG_PATH, load_config, save_config, vision_config
 
@@ -153,6 +153,10 @@ def main() -> int:
     listener: keyboard.Listener | None = None
     history = MotionHistory()
     consumed_this_turn = False
+    holding_spacebar = False
+    hold_started_at = 0.0
+    hold_start_window_s = 0.16
+    max_spacebar_hold_s = 0.75
     miss_count = 0
     was_visible = False
     last_focus_warning = 0.0
@@ -171,6 +175,28 @@ def main() -> int:
                 armed, debug, _, quitting = state.snapshot()
                 if quitting:
                     break
+
+                # A held key must be released on disarm, focus loss, or stalled prediction.
+                if holding_spacebar:
+                    focus_ok = bool(armed and roblox_has_focus())
+                    timed_out = time.perf_counter() - hold_started_at >= max_spacebar_hold_s
+                    if not armed or not focus_ok or timed_out:
+                        try:
+                            with state.lock:
+                                spacebar_up()
+                                if state.armed and (not focus_ok or timed_out):
+                                    state.armed = False
+                        except Exception as exc:
+                            print(f"[safety] Spacebar release failed during cleanup: {exc}")
+                        finally:
+                            holding_spacebar = False
+                        if armed and not focus_ok and time.perf_counter() - last_focus_warning > 2.0:
+                            print("[safety] Roblox lost focus; Spacebar released and macro disarmed.")
+                            last_focus_warning = time.perf_counter()
+                        elif timed_out:
+                            print("[safety] Alignment was not confirmed within the hold limit; Spacebar released and macro disarmed.")
+                        armed = False
+
                 if state.take_calibration_request():
                     if calibrate_gauge(sct, config):
                         history.clear()
@@ -227,6 +253,14 @@ def main() -> int:
                 if reading is None:
                     miss_count += 1
                     if was_visible and miss_count >= 5:
+                        if holding_spacebar:
+                            try:
+                                with state.lock:
+                                    spacebar_up()
+                            except Exception as exc:
+                                print(f"[safety] Spacebar release failed after gauge cleared: {exc}")
+                            finally:
+                                holding_spacebar = False
                         print("[gauge] gauge cleared; ready for the next player turn")
                         consumed_this_turn = False
                         history.clear()
@@ -254,8 +288,10 @@ def main() -> int:
                             horizon_s=config["prediction_horizon_s"],
                         )
                         lead_window = config["press_lead_s"]
-                        if eta is not None and eta <= lead_window:
-                            if config["dry_run"]:
+
+                        if config["dry_run"]:
+                            # Report the hold/release action without sending input.
+                            if eta is not None and eta <= hold_start_window_s:
                                 with state.lock:
                                     still_armed = state.armed
                                     lost_focus = still_armed and not roblox_has_focus()
@@ -263,31 +299,47 @@ def main() -> int:
                                         state.armed = False
                                 if lost_focus:
                                     if now - last_focus_warning > 2.0:
-                                        print("[safety] Roblox isn't the active window; macro disarmed and no input sent.")
+                                        print("[safety] Roblox is not the active window; macro disarmed and no input sent.")
                                         last_focus_warning = now
                                 elif still_armed:
-                                    print(f"[dry-run] would press Spacebar in {eta * 1000:.1f} ms (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f})")
+                                    print(f"[dry-run] would hold Spacebar, then release in about {max(0.0, eta) * 1000:.1f} ms (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f})")
                                     consumed_this_turn = True
-                            else:
-                                input_sent = False
-                                lost_focus = False
-                                try:
-                                    outcome = send_input_if_armed(
-                                        state, roblox_has_focus, press_spacebar
-                                    )
-                                    input_sent = outcome is InputOutcome.SENT
-                                    lost_focus = outcome is InputOutcome.FOCUS_LOST
-                                    if input_sent:
-                                        consumed_this_turn = True
-                                    if lost_focus:
+                        else:
+                            try:
+                                if not holding_spacebar and eta is not None and eta <= hold_start_window_s:
+                                    outcome = send_input_if_armed(state, roblox_has_focus, spacebar_down)
+                                    if outcome is InputOutcome.FOCUS_LOST:
                                         if now - last_focus_warning > 2.0:
-                                            print("[safety] Roblox isn't the active window; macro disarmed and no input sent.")
+                                            print("[safety] Roblox is not the active window; macro disarmed and no input sent.")
                                             last_focus_warning = now
-                                    elif input_sent:
-                                        print(f"[input] Spacebar press sent (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f}, eta={eta * 1000:.1f} ms)")
-                                except Exception as exc:
-                                    state.set_armed(False)
-                                    print(f"[safety] input failed; macro disarmed: {exc}")
+                                    elif outcome is InputOutcome.SENT:
+                                        holding_spacebar = True
+                                        hold_started_at = time.perf_counter()
+                                        print(f"[input] Spacebar down; predicted alignment in {max(0.0, eta) * 1000:.1f} ms")
+                                        # If already at the target, leave a small down interval so both edges register.
+                                        if eta <= lead_window:
+                                            time.sleep(0.004)
+                                            with state.lock:
+                                                spacebar_up()
+                                            holding_spacebar = False
+                                            consumed_this_turn = True
+                                            print(f"[input] Spacebar up at alignment (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f})")
+                                elif holding_spacebar and eta is not None and eta <= lead_window:
+                                    # Key-up is safety-critical: always attempt it once a target is reached.
+                                    with state.lock:
+                                        spacebar_up()
+                                    holding_spacebar = False
+                                    consumed_this_turn = True
+                                    print(f"[input] Spacebar up at alignment (tick={reading.tick_y:.3f}, zone={reading.zone_center:.3f}, eta={eta * 1000:.1f} ms)")
+                            except Exception as exc:
+                                if holding_spacebar:
+                                    try:
+                                        spacebar_up()
+                                    except Exception:
+                                        pass
+                                    holding_spacebar = False
+                                state.set_armed(False)
+                                print(f"[safety] input failed; macro disarmed: {exc}")
 
                 elapsed = time.perf_counter() - loop_start
                 if elapsed < loop_period:
@@ -296,6 +348,13 @@ def main() -> int:
         print("\n[exit] interrupted")
     finally:
         state.set_armed(False)
+        if holding_spacebar:
+            try:
+                spacebar_up()
+                print("[safety] Spacebar released during shutdown.")
+            except Exception as exc:
+                print(f"[safety] Spacebar release failed during shutdown: {exc}")
+            holding_spacebar = False
         if listener is not None:
             listener.stop()
         cv2.destroyAllWindows()
