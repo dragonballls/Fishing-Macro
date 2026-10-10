@@ -19,6 +19,26 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(config["poll_hz"], 90)
         self.assertEqual(warnings, [])
 
+    def test_mouse_action_requires_a_valid_calibrated_target(self):
+        config, warnings = normalize_config({"input_mode": "mouse_click"})
+        self.assertEqual(config["input_mode"], "spacebar")
+        self.assertTrue(any("without a calibrated target" in warning for warning in warnings))
+
+        point = {"x": -1920, "y": 520}
+        config, warnings = normalize_config({"input_mode": "mouse_click", "action_point": point})
+        self.assertEqual(config["input_mode"], "mouse_click")
+        self.assertEqual(config["action_point"], point)
+        self.assertEqual(warnings, [])
+
+    def test_invalid_mouse_target_is_discarded_and_requires_recalibration(self):
+        config, warnings = normalize_config({
+            "input_mode": "mouse_click",
+            "action_point": {"x": "bad", "y": 50},
+        })
+        self.assertIsNone(config["action_point"])
+        self.assertEqual(config["input_mode"], "spacebar")
+        self.assertTrue(any("action_point is malformed" in warning for warning in warnings))
+
     def test_invalid_dry_run_never_enables_live_input(self):
         config, warnings = normalize_config({"dry_run": "false"})
         self.assertIs(config["dry_run"], True)
