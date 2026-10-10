@@ -4,8 +4,16 @@ from unittest.mock import call, patch
 
 from fishfight import input_events
 
-
 class SpacebarInputTests(unittest.TestCase):
+    def test_down_and_up_map_to_scan_code_transitions(self):
+        with patch.object(input_events.sys, "platform", "win32"), patch.object(input_events, "_send_windows_key") as send:
+            input_events.spacebar_down()
+            input_events.spacebar_up()
+        self.assertEqual(send.call_args_list, [
+            call(input_events.SPACE_SCAN_CODE, False),
+            call(input_events.SPACE_SCAN_CODE, True),
+        ])
+
     def test_windows_backend_sends_space_scan_code_down_then_up(self):
         with (
             patch.object(input_events.sys, "platform", "win32"),
@@ -13,17 +21,13 @@ class SpacebarInputTests(unittest.TestCase):
             patch.object(input_events.time, "sleep") as sleep,
         ):
             input_events.press_spacebar()
-
-        self.assertEqual(
-            send.call_args_list,
-            [
-                call(input_events.SPACE_SCAN_CODE, False),
-                call(input_events.SPACE_SCAN_CODE, True),
-            ],
-        )
+        self.assertEqual(send.call_args_list, [
+            call(input_events.SPACE_SCAN_CODE, False),
+            call(input_events.SPACE_SCAN_CODE, True),
+        ])
         sleep.assert_called_once_with(input_events.DEFAULT_HOLD_SECONDS)
 
-    def test_windows_backend_releases_space_if_wait_fails(self):
+    def test_tap_releases_space_if_hold_wait_fails(self):
         with (
             patch.object(input_events.sys, "platform", "win32"),
             patch.object(input_events, "_send_windows_key") as send,
@@ -31,29 +35,20 @@ class SpacebarInputTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "test"):
                 input_events.press_spacebar()
-
-        self.assertEqual(
-            send.call_args_list,
-            [
-                call(input_events.SPACE_SCAN_CODE, False),
-                call(input_events.SPACE_SCAN_CODE, True),
-            ],
-        )
+        self.assertEqual(send.call_args_list, [
+            call(input_events.SPACE_SCAN_CODE, False),
+            call(input_events.SPACE_SCAN_CODE, True),
+        ])
         sleep.assert_called_once_with(input_events.DEFAULT_HOLD_SECONDS)
 
-    def test_rejects_invalid_or_unbounded_holds_before_sending(self):
+    def test_rejects_invalid_or_unbounded_tap_holds_before_sending(self):
         invalid = (0, -0.1, 0.5, math.nan, math.inf, True, "0.04")
-        with (
-            patch.object(input_events.sys, "platform", "win32"),
-            patch.object(input_events, "_send_windows_key") as send,
-        ):
+        with patch.object(input_events.sys, "platform", "win32"), patch.object(input_events, "_send_windows_key") as send:
             for duration in invalid:
                 with self.subTest(duration=duration):
                     with self.assertRaises(ValueError):
                         input_events.press_spacebar(duration)
-
         send.assert_not_called()
-
 
 if __name__ == "__main__":
     unittest.main()
