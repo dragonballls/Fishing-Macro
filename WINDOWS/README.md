@@ -1,5 +1,9 @@
 # Fishing Macro
 
+**Start with [GUIDE.html](../GUIDE.html)** after extracting the project. Open it
+in your browser for illustrated calibration, searchable fixes, and answers to
+the common questions from the fishing videos.
+
 An auto-fisher for the Blox Fruits fishing minigame. It reads the screen, plays
 the reel minigame, buys bait when it runs low, and sells the catch.
 

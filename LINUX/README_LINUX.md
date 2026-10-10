@@ -1,5 +1,9 @@
 # Linux / Sober support — X11 only
 
+**Start with [GUIDE.html](../GUIDE.html)** after extracting the project. Open it
+in your browser for the Linux installation sequence, calibration, and searchable
+troubleshooting shared with the current Windows core.
+
 This is the Linux launcher for the same Blox Fruits fishing macro and premium
 GUI used on Windows. It targets Roblox through **Sober** on an **X11** desktop.
 The detector, Update 30 NPC logic, safety watchdog, calibration workflow, and

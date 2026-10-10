@@ -5,6 +5,10 @@ the reel minigame, buys bait when it runs low, and sells the catch — driven by
 what's on screen (colors and shapes), not fixed timings, so it adapts to
 different rods, lighting and times of day.
 
+**New here or stuck?** Download and extract the project, then open
+**[GUIDE.html](GUIDE.html)** in your browser for installation, calibration,
+searchable questions, and fixes. The guide works offline on Windows and Linux.
+
 The project is split by platform:
 
 ## 🪟 [`WINDOWS/`](WINDOWS/README.md) — the main version
