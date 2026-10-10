@@ -22,9 +22,9 @@ jobs:
         python-version: ["3.12"]
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -51,7 +51,7 @@ jobs:
           PY
       - name: Upload source ZIP
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Sharkman-Fish-Fight-Macro
           path: dist/SharkmanFishFightMacro.zip
