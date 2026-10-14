@@ -18,6 +18,39 @@ from bloxfish.ai_calibration import (  # noqa: E402
 )
 
 
+class ConfigPreviewRollbackTests(unittest.TestCase):
+    def test_restore_returns_all_ai_touched_fields_to_the_original_values(self):
+        from bloxfish.config import Config
+        from bloxfish.ai_calibration import capture_config_values, restore_config_values
+
+        cfg = Config()
+        cfg.detection.bar_search_left = 0.11
+        cfg.shop.center = (0.44, 0.55)
+        baseline = capture_config_values(
+            cfg, ["detection.bar_search_left", "shop.center"]
+        )
+        cfg.detection.bar_search_left = 0.77
+        cfg.shop.center = (0.88, 0.99)
+
+        restore_config_values(cfg, baseline)
+        self.assertEqual(cfg.detection.bar_search_left, 0.11)
+        self.assertEqual(cfg.shop.center, (0.44, 0.55))
+
+    def test_multiple_ai_proposals_keep_the_earliest_baseline(self):
+        from bloxfish.config import Config
+        from bloxfish.ai_calibration import capture_config_values, restore_config_values
+
+        cfg = Config()
+        cfg.detection.bar_search_left = 0.13
+        baseline = capture_config_values(cfg, ["detection.bar_search_left"])
+        cfg.detection.bar_search_left = 0.52
+        baseline = capture_config_values(cfg, ["detection.bar_search_left"], baseline)
+        cfg.detection.bar_search_left = 0.81
+
+        restore_config_values(cfg, baseline)
+        self.assertEqual(cfg.detection.bar_search_left, 0.13)
+
+
 class GeminiCoordinateValidationTests(unittest.TestCase):
     def test_accepts_high_confidence_visible_reel_box_and_converts_fractions(self):
         result = validate_response({

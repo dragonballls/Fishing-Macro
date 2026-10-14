@@ -88,8 +88,8 @@ except ImportError:                                # noqa: BLE001
 
 from bloxfish.config import Config, COOLDOWNS, VERSION  # noqa: E402
 from bloxfish.ai_calibration import (  # noqa: E402
-    GeminiCalibrationError, analyze_screenshot, get_saved_api_key,
-    save_api_key, screen_changed,
+    GeminiCalibrationError, analyze_screenshot, capture_config_values,
+    get_saved_api_key, restore_config_values, save_api_key, screen_changed,
 )
 from bloxfish.engine import FishingEngine          # noqa: E402
 from bloxfish import vision                        # noqa: E402
@@ -1021,6 +1021,11 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_evidence = {}
         self._ai_default_shot = None
         self._ai_default_win = None
+        # Proposed AI coordinates are preview-only until Save succeeds. Keep the
+        # earliest pre-AI value for every touched field so close-without-save
+        # can restore the live Config object as well as leaving disk unchanged.
+        self._ai_base_values = {}
+        self._ai_committed = False
         self._ai_last_shot = None
         self._ai_last_win = None
         self._ai_toast = None
@@ -1805,6 +1810,10 @@ class Calibrator(ctk.CTkToplevel):
     def _ai_begin(self, api_key: str) -> None:
         if self._ai_running:
             return
+        # A previously saved session starts a new, independent preview.
+        if self._ai_committed:
+            self._ai_base_values = {}
+            self._ai_committed = False
         self._ai_stop_event = threading.Event()
         self._ai_force_event = threading.Event()
         self._ai_running = True
@@ -2001,9 +2010,16 @@ class Calibrator(ctk.CTkToplevel):
             target = getattr(self.cfg, holder)
             coords = proposal["coords"]
             if kind == "box" and len(fields) == 4 and len(coords) == 4:
+                paths = [f"{holder}.{field}" for field in fields]
+                self._ai_base_values = capture_config_values(
+                    self.cfg, paths, self._ai_base_values
+                )
                 for field, value in zip(fields, coords):
                     setattr(target, field, float(value))
             elif kind == "dot" and len(fields) == 1 and len(coords) == 2:
+                self._ai_base_values = capture_config_values(
+                    self.cfg, [f"{holder}.{fields[0]}"], self._ai_base_values
+                )
                 setattr(target, fields[0], (float(coords[0]), float(coords[1])))
 
         # Keep the optional tight zone detector off unless the user already
@@ -2065,6 +2081,15 @@ class Calibrator(ctk.CTkToplevel):
         except Exception:  # noqa: BLE001
             pass
         self._ai_close_toast()
+        # AI suggestions are provisional until cfg.save() succeeds. Roll them
+        # back on close, including when the outer Setup screen later saves its
+        # shared Config object. Explicit Save calibration clears this snapshot.
+        if self._ai_base_values and not self._ai_committed:
+            try:
+                restore_config_values(self.cfg, self._ai_base_values)
+            except Exception:  # noqa: BLE001
+                pass
+            self._ai_base_values = {}
         # Close transient viewers before tearing down their owner/widgets.
         self._close_inspector()
         super().destroy()
@@ -2645,6 +2670,10 @@ class Calibrator(ctk.CTkToplevel):
             self.hint.configure(text=f"✖  Could not write config.json: {exc}",
                                 text_color="#ef476f")
             return
+        # cfg.save() succeeded: accepted AI suggestions are now explicit user
+        # changes. Disarm preview rollback only after the write completes.
+        self._ai_committed = True
+        self._ai_base_values = {}
         count = sum(key in self._reviewed for key in self._core_keys)
         if count == len(self._core_keys):
             self._set_interaction("Calibration saved — all core tools were reviewed in this session.", SUCCESS)

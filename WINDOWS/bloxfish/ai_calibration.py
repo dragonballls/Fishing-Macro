@@ -5,6 +5,8 @@ Gemini. Captures are processed in memory; API keys use the OS credential store
 and are never written to config.json or logged.
 """
 from __future__ import annotations
+from copy import deepcopy
+from collections.abc import Iterable, Mapping
 import base64
 import io
 import json
@@ -58,6 +60,36 @@ REFERENCE_IMAGES = (
     ("Craft close", "calib/craft_close.png"),
     ("NPC interact prompt", "check_range.png"),
 )
+
+
+def capture_config_values(
+    config: object,
+    paths: Iterable[str],
+    previous: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Snapshot config fields once, preserving the earliest pre-preview value."""
+    captured = deepcopy(dict(previous or {}))
+    for path in paths:
+        if not isinstance(path, str) or path.count(".") != 1:
+            raise ValueError("Config snapshot paths must be 'section.field'.")
+        section, field = path.split(".", 1)
+        target = getattr(config, section, None)
+        if target is None or not hasattr(target, field):
+            raise ValueError(f"Unknown config field: {path}")
+        captured.setdefault(path, deepcopy(getattr(target, field)))
+    return captured
+
+
+def restore_config_values(config: object, snapshot: Mapping[str, Any]) -> None:
+    """Restore config values captured before an uncommitted AI preview."""
+    for path, value in snapshot.items():
+        if not isinstance(path, str) or path.count(".") != 1:
+            raise ValueError("Config snapshot paths must be 'section.field'.")
+        section, field = path.split(".", 1)
+        target = getattr(config, section, None)
+        if target is None or not hasattr(target, field):
+            raise ValueError(f"Unknown config field: {path}")
+        setattr(target, field, deepcopy(value))
 
 
 class GeminiCalibrationError(RuntimeError):
