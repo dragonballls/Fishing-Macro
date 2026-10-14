@@ -1819,6 +1819,20 @@ class Calibrator(ctk.CTkToplevel):
             "analyzes scene changes. Follow each NEXT STEP prompt. Press Capture "
             "current screen after opening the requested game UI. Nothing is saved yet."
         )
+        # Hide the calibration and setup windows for the duration of live
+        # capture; otherwise their own pixels can cover the game rectangle.
+        # The small top-right guidance toast is deliberately left visible and
+        # is masked out by the capture worker before any upload.
+        try:
+            self.master_app.withdraw()
+        except Exception:  # noqa: BLE001
+            pass
+        self.withdraw()
+        try:
+            if self._ai_toast is not None:
+                self._ai_toast.lift()
+        except Exception:  # noqa: BLE001
+            pass
         self._ai_thread = threading.Thread(
             target=self._ai_worker, args=(api_key,),
             name="FishingMacro-GeminiCalibration", daemon=True,
@@ -1965,6 +1979,14 @@ class Calibrator(ctk.CTkToplevel):
     def _ai_finish(self, proposals, evidence, last_frame, last_win,
                    error: str | None, request_count: int) -> None:
         """Apply proposals to the review canvas only; do not write config.json."""
+        # Restore the workspace only after capture stops, before touching its
+        # canvas. The notice stays topmost with the final summary until closed.
+        try:
+            self.master_app.deiconify()
+            self.deiconify()
+            self.lift()
+        except Exception:  # noqa: BLE001
+            pass
         self._ai_running = False
         self._ai_pending = dict(proposals)
         self._ai_evidence = dict(evidence)
@@ -2029,6 +2051,14 @@ class Calibrator(ctk.CTkToplevel):
 
     # -- read-only inspection ---------------------------------------------
     def destroy(self) -> None:
+        # If the workspace is closed mid-session, do not leave the main setup
+        # window hidden. The worker is daemonized and will stop on this event.
+        try:
+            if getattr(self, "_ai_running", False):
+                self._ai_stop_event.set()
+                self.master_app.deiconify()
+        except Exception:  # noqa: BLE001
+            pass
         # Stop screenshot monitoring before tearing down any Tk widgets.
         try:
             self._ai_stop_event.set()
