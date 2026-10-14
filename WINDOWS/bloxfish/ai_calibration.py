@@ -52,7 +52,6 @@ PROVIDER_CONFIGS = {
     },
 }
 PROVIDERS = tuple(PROVIDER_CONFIGS)
-MIN_CONFIDENCE = 0.78
 
 ALLOWED_KINDS = {
     "bar_search": "box", "zone_track": "box", "bite": "box", "meter": "box",
