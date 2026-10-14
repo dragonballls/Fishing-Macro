@@ -22,6 +22,38 @@ KEY_SERVICE = "FishingMacro.GeminiAutoCalibration"
 KEY_USER = "gemini-api-key"
 MIN_CONFIDENCE = 0.78
 
+# Every configured service below accepts image input at its documented endpoint.
+# Users can override the model in the dialog; keys remain isolated per provider.
+PROVIDER_CONFIGS = {
+    "Gemini": {
+        "kind": "gemini",
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/",
+        "model": MODEL_NAME,
+    },
+    "OpenRouter": {
+        "kind": "openai",
+        "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+        "model": "google/gemini-2.5-flash",
+    },
+    "Groq": {
+        "kind": "openai",
+        "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+        "model": "qwen/qwen3.6-27b",
+    },
+    "OpenAI": {
+        "kind": "openai",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "model": "gpt-4.1-mini",
+    },
+    "Mistral": {
+        "kind": "openai",
+        "endpoint": "https://api.mistral.ai/v1/chat/completions",
+        "model": "ministral-14b-latest",
+    },
+}
+PROVIDERS = tuple(PROVIDER_CONFIGS)
+MIN_CONFIDENCE = 0.78
+
 ALLOWED_KINDS = {
     "bar_search": "box", "zone_track": "box", "bite": "box", "meter": "box",
     "popup": "box", "learn": "box", "learn_click": "dot", "menu": "box",
@@ -96,11 +128,23 @@ class GeminiCalibrationError(RuntimeError):
     """Safe, user-displayable calibration/API failure."""
 
 
-def get_saved_api_key() -> str | None:
-    """Load the Gemini key from the OS credential store; never from a file."""
+def _provider_key_location(provider: str = "Gemini") -> tuple[str, str]:
+    """Return a provider-specific credential-store identity."""
+    if provider not in PROVIDER_CONFIGS:
+        raise GeminiCalibrationError("Choose a supported AI provider.")
+    if provider == "Gemini":
+        # Preserve the existing Gemini credential so current installations upgrade cleanly.
+        return KEY_SERVICE, KEY_USER
+    safe_name = "".join(ch for ch in provider if ch.isalnum())
+    return f"FishingMacro.AICalibration.{safe_name}", "api-key"
+
+
+def get_saved_api_key(provider: str = "Gemini") -> str | None:
+    """Load a provider-specific API key from the OS credential store."""
+    service, username = _provider_key_location(provider)
     try:
         import keyring
-        value = keyring.get_password(KEY_SERVICE, KEY_USER)
+        value = keyring.get_password(service, username)
         return value.strip() if isinstance(value, str) and value.strip() else None
     except Exception as exc:  # noqa: BLE001
         raise GeminiCalibrationError(
@@ -109,37 +153,39 @@ def get_saved_api_key() -> str | None:
         ) from exc
 
 
-def save_api_key(api_key: str) -> None:
-    """Store a non-empty key using the active OS credential-store backend."""
+def save_api_key(api_key: str, provider: str = "Gemini") -> None:
+    """Store the selected provider's non-empty key in the OS credential store."""
     api_key = api_key.strip()
     if not api_key or len(api_key) > 512 or any(ch.isspace() for ch in api_key):
-        raise GeminiCalibrationError("Enter a valid Gemini API key.")
+        raise GeminiCalibrationError(f"Enter a valid {provider} API key.")
+    service, username = _provider_key_location(provider)
     try:
         import keyring
-        keyring.set_password(KEY_SERVICE, KEY_USER, api_key)
-        verified = keyring.get_password(KEY_SERVICE, KEY_USER)
+        keyring.set_password(service, username, api_key)
+        verified = keyring.get_password(service, username)
         if verified != api_key:
             raise GeminiCalibrationError(
-                "The key could not be verified in Windows Credential Manager."
+                f"The {provider} key could not be verified in Windows Credential Manager."
             )
     except GeminiCalibrationError:
         raise
     except Exception as exc:  # noqa: BLE001
         raise GeminiCalibrationError(
-            "Could not store the key securely in Windows Credential Manager."
+            f"Could not store the {provider} key securely in Windows Credential Manager."
         ) from exc
 
 
-def delete_saved_api_key() -> None:
+def delete_saved_api_key(provider: str = "Gemini") -> None:
+    service, username = _provider_key_location(provider)
     try:
         import keyring
         try:
-            keyring.delete_password(KEY_SERVICE, KEY_USER)
+            keyring.delete_password(service, username)
         except keyring.errors.PasswordDeleteError:
             pass
     except Exception as exc:  # noqa: BLE001
         raise GeminiCalibrationError(
-            "Could not remove the saved Gemini key from Windows Credential Manager."
+            f"Could not remove the saved {provider} key from Windows Credential Manager."
         ) from exc
 
 
@@ -254,7 +300,7 @@ def validate_response(raw: dict[str, Any]) -> dict[str, Any]:
     state = raw.get("screen_state")
     if state not in STATE_KEYS:
         state = "unknown"
-    summary = _clean_text(raw.get("summary"), "Gemini inspected the current game screen.")
+    summary = _clean_text(raw.get("summary"), "The AI model inspected the current game screen.")
     next_instruction = _clean_text(
         raw.get("next_instruction"),
         "Keep Roblox visible and capture the next screen when the relevant UI appears.",
@@ -313,12 +359,23 @@ def validate_response(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def analyze_screenshot(frame_bgr, api_key: str, asset_root: str | Path,
-                       timeout: float = 35.0) -> dict[str, Any]:
-    """Send one live game-window frame and the reference contact sheet to Gemini."""
+def analyze_screenshot(
+    frame_bgr, api_key: str, asset_root: str | Path,
+    timeout: float = 35.0, provider: str = "Gemini", model: str | None = None,
+) -> dict[str, Any]:
+    """Analyze one live game-window frame using a selected vision API."""
     api_key = (api_key or "").strip()
     if not api_key:
-        raise GeminiCalibrationError("No Gemini API key was provided.")
+        raise GeminiCalibrationError(f"No {provider} API key was provided.")
+    config = PROVIDER_CONFIGS.get(provider)
+    if config is None:
+        raise GeminiCalibrationError("Choose a supported AI provider.")
+    model = (model or "").strip() or config["model"]
+    if (len(model) > 120 or not model
+            or not all(ch.isalnum() or ch in "._/-" for ch in model)
+            or ".." in model or model.startswith("/") or model.endswith("/")):
+        raise GeminiCalibrationError("The model name contains unsupported characters.")
+
     screenshot = _image_bytes(frame_bgr)
     reference = _reference_sheet(Path(asset_root))
     expected_keys = ", ".join(ALLOWED_KINDS)
@@ -328,6 +385,9 @@ The FIRST image is a screenshot of only the Roblox client window. The SECOND ima
 is a labeled sheet of bundled reference pictures from the app. Match reference
 pictures to the actual game UI; do not treat reference-sheet items as visible in-game.
 
+Return ONLY a single JSON object with exactly these top-level fields:
+screen_state (string), summary (string), next_instruction (string), regions (array).
+Each regions item must have key, kind, coords, confidence, evidence. No Markdown fences.
 Normalize screen coordinates to 0..1000, origin top-left. A box uses [left, top, right,
 bottom]; a dot uses [x, y]. Coordinates are later converted into game-window fractions.
 
@@ -352,71 +412,124 @@ If unclear, emit no region and give one actionable next_instruction explaining w
 Do not ask the user to upload/save screenshots; this app captures them automatically.
 All suggested changes are reviewed in the app before saving.
 """
-    parts = [
-        {"text": prompt},
-        {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(screenshot).decode("ascii")}},
-    ]
-    if reference:
-        parts.append({"inline_data": {
-            "mime_type": "image/jpeg",
-            "data": base64.b64encode(reference).decode("ascii"),
-        }})
-    body = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": _proposal_schema(),
-            "maxOutputTokens": 1800,
-        },
-    }
-    request = urllib.request.Request(
-        API_URL,
-        data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-        method="POST",
-    )
     try:
+        if config["kind"] == "gemini":
+            parts = [
+                {"text": prompt},
+                {"inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": base64.b64encode(screenshot).decode("ascii"),
+                }},
+            ]
+            if reference:
+                parts.append({"inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": base64.b64encode(reference).decode("ascii"),
+                }})
+            body = {
+                "contents": [{"parts": parts}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "responseSchema": _proposal_schema(),
+                    "maxOutputTokens": 1800,
+                },
+            }
+            request = urllib.request.Request(
+                config["endpoint"] + model + ":generateContent",
+                data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+                headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+                method="POST",
+            )
+        else:
+            def image_part(image_bytes: bytes) -> dict[str, Any]:
+                encoded = base64.b64encode(image_bytes).decode("ascii")
+                return {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64," + encoded, "detail": "high"},
+                }
+
+            content = [{"type": "text", "text": prompt}, image_part(screenshot)]
+            if reference:
+                content.append(image_part(reference))
+            body = {
+                "model": model,
+                "messages": [{"role": "user", "content": content}],
+                "response_format": {"type": "json_object"},
+                "max_tokens": 2200,
+                "temperature": 0,
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + api_key,
+            }
+            if provider == "OpenRouter":
+                headers["HTTP-Referer"] = "https://github.com/dragonballls/Fishing-Macro"
+                headers["X-Title"] = "Fishing Macro"
+            request = urllib.request.Request(
+                config["endpoint"],
+                data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        try:
-            error_data = json.loads(exc.read().decode("utf-8"))
-            detail = error_data.get("error", {}).get("message", "")
-        except Exception:  # noqa: BLE001
-            detail = ""
-        if exc.code in (400, 401, 403):
+        if exc.code in (401, 403):
             raise GeminiCalibrationError(
-                "Gemini rejected the API key or request. Recheck the key and that "
-                "the Gemini API is enabled for its Google project."
+                f"{provider} rejected the API key or account permission. Check the key and provider dashboard."
             ) from exc
         if exc.code == 429:
             raise GeminiCalibrationError(
-                "Gemini rate limit or quota reached. Check the project's API quota and retry later."
+                f"{provider} rate limit or quota is exhausted. Switch providers or check the provider dashboard."
             ) from exc
-        raise GeminiCalibrationError(f"Gemini API returned HTTP {exc.code}. {detail[:240]}") from exc
+        if exc.code == 402:
+            raise GeminiCalibrationError(
+                f"{provider} reports insufficient credits. Check the account balance or select another provider."
+            ) from exc
+        if exc.code == 400:
+            raise GeminiCalibrationError(
+                f"{provider} rejected the model or request. Confirm the model supports vision and JSON output."
+            ) from exc
+        raise GeminiCalibrationError(f"{provider} API returned HTTP {exc.code}.") from exc
     except urllib.error.URLError as exc:
         raise GeminiCalibrationError(
-            "Could not reach the Gemini API. Check your internet connection and try again."
+            f"Could not reach {provider}. Check your internet connection and selected model, then retry."
         ) from exc
     except TimeoutError as exc:
-        raise GeminiCalibrationError("Gemini timed out; retry the current calibration step.") from exc
+        raise GeminiCalibrationError(f"{provider} timed out; retry the current calibration step.") from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise GeminiCalibrationError("Gemini returned an unreadable response; retry the step.") from exc
+        raise GeminiCalibrationError(f"{provider} returned an unreadable response; retry the step.") from exc
 
     try:
-        candidates = payload.get("candidates") or []
-        parts_out = candidates[0]["content"]["parts"]
-        response_text = "\n".join(
-            part.get("text", "") for part in parts_out if isinstance(part, dict)
-        ).strip()
+        if config["kind"] == "gemini":
+            candidates = payload.get("candidates") or []
+            parts_out = candidates[0]["content"]["parts"]
+            response_text = "\n".join(
+                part.get("text", "") for part in parts_out if isinstance(part, dict)
+            ).strip()
+        else:
+            choices = payload.get("choices") or []
+            message = choices[0]["message"]
+            content_out = message.get("content", "")
+            if isinstance(content_out, str):
+                response_text = content_out.strip()
+            elif isinstance(content_out, list):
+                response_text = "\n".join(
+                    item.get("text", "") for item in content_out
+                    if isinstance(item, dict) and isinstance(item.get("text"), str)
+                ).strip()
+            else:
+                response_text = ""
         fence = chr(96) * 3
         if response_text.startswith(fence):
             response_text = response_text.split("\n", 1)[1].rsplit(fence, 1)[0].strip()
         raw = json.loads(response_text)
     except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        api_error = payload.get("error", {}).get("message", "")
         raise GeminiCalibrationError(
-            "Gemini did not return valid calibration JSON. "
-            + (str(api_error)[:180] if api_error else "Retry with the relevant game UI visible.")
+            f"{provider} did not return valid calibration JSON. Retry with the relevant game UI visible."
         ) from exc
+    if not isinstance(raw, dict):
+        raise GeminiCalibrationError(f"{provider} returned an invalid calibration response.")
     return validate_response(raw)
+
