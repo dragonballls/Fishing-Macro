@@ -98,21 +98,29 @@ If the main hotkeys do not work, the window has buttons that do the same thing
 
 ## Calibrate controls
 
-### Gemini-assisted automatic calibration
+### Multi-provider vision-assisted automatic calibration
 
-The calibration window includes **Gemini Auto-Calibrate**. Enter your own Gemini API
-key once; the app stores it in the operating-system credential store, not in
-`config.json`, the repository, or logs. You can replace it by entering a new key
-or remove it from Windows Credential Manager under the service
-`FishingMacro.GeminiAutoCalibration` and account `gemini-api-key`.
+The calibration window includes **AI Auto-Calibrate** with selectable vision
+providers: **OpenRouter, Groq, OpenAI, Mistral, and Gemini**. The dialog has a
+**Get key** shortcut for each provider's official key page and a model-ID field
+you can edit. Suggested defaults use image-capable models; model availability
+and account limits can change, so switch models if a provider rejects one.
+
+Each provider's API key is stored separately in the operating-system credential
+store, not in `config.json`, the repository, or logs. The original Gemini
+credential continues to work. Gemini uses the existing
+`FishingMacro.GeminiAutoCalibration` / `gemini-api-key` entry; other providers
+have their own credential-store entries. Keys are never shared across providers.
 
 After you start, the app captures the actual Roblox client window in memory and
-compares it with the bundled calibration reference pictures. A small notice at
-the top-right tells you which game screen to show next. Follow the instruction;
-when the requested UI is visible, use **Capture current screen** if you want to
-request an additional analysis. This is sequential, screen-guided calibration:
-hidden buttons cannot be safely located from a screenshot that does not show
-them, so the app asks you to open the matching fishing, reel, or NPC UI.
+compares it with the bundled calibration reference pictures. A small notice
+near the top-right, inset farther from the edge, tells you which game screen to
+show next. Follow the instruction; when the requested UI is visible, use
+**Capture current screen** to request an additional analysis. This is sequential,
+screen-guided calibration: hidden buttons cannot be safely located from a
+screenshot that does not show them, so the app asks you to open the matching
+fishing, reel, or NPC UI. If one provider reaches its quota, stop the session
+and select another provider with its own valid API key.
 
 The app refuses to upload a full-monitor fallback if it cannot identify the
 Roblox client, masks its own notification area before image analysis, rejects
