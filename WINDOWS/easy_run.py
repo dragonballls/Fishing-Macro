@@ -88,8 +88,9 @@ except ImportError:                                # noqa: BLE001
 
 from bloxfish.config import Config, COOLDOWNS, VERSION  # noqa: E402
 from bloxfish.ai_calibration import (  # noqa: E402
-    GeminiCalibrationError, analyze_screenshot, capture_config_values,
-    get_saved_api_key, restore_config_values, save_api_key, screen_changed,
+    GeminiCalibrationError, PROVIDERS, PROVIDER_CONFIGS, analyze_screenshot,
+    capture_config_values, get_saved_api_key, restore_config_values,
+    save_api_key, screen_changed,
 )
 from bloxfish.engine import FishingEngine          # noqa: E402
 from bloxfish import vision                        # noqa: E402
@@ -1013,6 +1014,7 @@ class Calibrator(ctk.CTkToplevel):
         # Gemini auto-calibration runs in a cancellable worker. Results stay in
         # memory until the user reviews them and presses Save calibration.
         self._ai_running = False
+        self._ai_provider = "OpenRouter"
         self._ai_stop_event = threading.Event()
         self._ai_force_event = threading.Event()
         self._ai_thread = None
@@ -1185,7 +1187,7 @@ class Calibrator(ctk.CTkToplevel):
         self.warn = ctk.CTkLabel(right, text="", text_color=DANGER,
                                  anchor="w", justify="left", wraplength=880,
                                  font=ctk.CTkFont(size=12, weight="bold"))
-        ctk.CTkButton(actions, text="Gemini Auto-Calibrate", width=166, height=34,
+        ctk.CTkButton(actions, text="AI Auto-Calibrate", width=166, height=34,
                       fg_color="#17466b", hover_color="#23628f", text_color=TEXT,
                       font=ctk.CTkFont(size=12, weight="bold"),
                       command=self._ai_prompt_key).pack(side="left", padx=(0, 8))
@@ -1603,64 +1605,97 @@ class Calibrator(ctk.CTkToplevel):
 
     # -- Gemini-assisted live calibration ---------------------------------
     def _ai_prompt_key(self) -> None:
-        """Ask for the Gemini key locally; never reveal or log a stored key."""
+        """Choose a vision provider and keep its API key in the OS credential store."""
         if self._ai_running:
-            self._ai_toast_message("Gemini calibration is already active. Use the top-right notice to guide or stop it.")
+            self._ai_toast_message(
+                f"{self._ai_provider} calibration is already active. Use the top-right notice to guide or stop it."
+            )
             return
+
+        providers = list(PROVIDERS)
+        provider_var = tk.StringVar(value="OpenRouter")
+        key_holder = {"key": None}
+        key_urls = {
+            "Gemini": "https://aistudio.google.com/apikey",
+            "OpenRouter": "https://openrouter.ai/keys",
+            "Groq": "https://console.groq.com/keys",
+            "OpenAI": "https://platform.openai.com/api-keys",
+            "Mistral": "https://console.mistral.ai/api-keys/",
+        }
         try:
-            saved_key = get_saved_api_key()
+            key_holder["key"] = get_saved_api_key(provider_var.get())
         except GeminiCalibrationError as exc:
             from tkinter import messagebox
-            messagebox.showerror("Gemini key storage", str(exc), parent=self)
+            messagebox.showerror("API key storage", str(exc), parent=self)
             return
 
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Gemini Auto-Calibrate")
-        dialog.geometry("520x390")
-        dialog.resizable(False, False)
+        dialog.title("AI Auto-Calibrate")
+        dialog.geometry("590x610")
+        dialog.minsize(560, 590)
+        dialog.resizable(True, True)
         dialog.transient(self)
         dialog.attributes("-topmost", True)
         dialog.configure(fg_color=APP_BG)
-        dialog.grab_set()
 
         shell = ctk.CTkFrame(dialog, fg_color=BG_CARD, corner_radius=16,
                              border_width=1, border_color=BORDER)
         shell.pack(fill="both", expand=True, padx=16, pady=16)
-        ctk.CTkLabel(shell, text="Gemini Auto-Calibrate", text_color=TEXT,
+        ctk.CTkLabel(shell, text="Multi-provider AI Auto-Calibrate", text_color=TEXT,
                      font=ctk.CTkFont(size=19, weight="bold")).pack(
                          anchor="w", padx=18, pady=(17, 6))
         ctk.CTkLabel(
             shell,
-            text=("The app will capture the Roblox game window, compare it with "
-                  "the bundled calibration reference images, and suggest box / "
-                  "click-point positions. Follow the top-right prompts to show "
-                  "different game screens. Nothing is saved until you review "
-                  "the canvas and press Save calibration."),
-            text_color="#c5d7e9", justify="left", anchor="w", wraplength=450,
+            text=("Select an image-capable model provider. The app captures the Roblox "
+                  "client window and the bundled calibration references, then proposes "
+                  "visible controls for your review. Nothing is saved to calibration until "
+                  "you inspect the canvas and press Save calibration."),
+            text_color="#c5d7e9", justify="left", anchor="w", wraplength=510,
             font=ctk.CTkFont(size=11),
         ).pack(fill="x", padx=18, pady=(0, 10))
         ctk.CTkLabel(
             shell,
-            text=("Privacy: screenshots of the confirmed Roblox client window and "
-                  "bundled reference images are sent to Google Gemini for analysis. "
-                  "Screenshots are not saved by this feature. Your API key is stored "
-                  "in the operating-system credential store, not config.json."),
-            text_color="#fbbf24", justify="left", anchor="w", wraplength=450,
+            text=("Privacy: screenshots are sent to the provider you select below, not "
+                  "saved as screenshot files by this feature. API keys are stored in "
+                  "Windows Credential Manager, separately for each provider. Provider "
+                  "quotas and billing rules still apply."),
+            text_color="#fbbf24", justify="left", anchor="w", wraplength=510,
             font=ctk.CTkFont(size=11, weight="bold"),
         ).pack(fill="x", padx=18, pady=(0, 10))
-        if saved_key:
-            ctk.CTkLabel(shell, text="A saved Gemini key is available (the key is hidden).",
-                         text_color=SUCCESS, anchor="w",
-                         font=ctk.CTkFont(size=11)).pack(
-                             fill="x", padx=18, pady=(0, 4))
-        entry = ctk.CTkEntry(shell, placeholder_text="Paste Gemini API key",
-                             show="*", height=36)
-        entry.pack(fill="x", padx=18, pady=(0, 4))
+
+        ctk.CTkLabel(shell, text="VISION PROVIDER", text_color=ACCENT,
+                     anchor="w", font=ctk.CTkFont(size=10, weight="bold")).pack(
+                         fill="x", padx=18, pady=(2, 3))
+        provider_menu = ctk.CTkOptionMenu(
+            shell, variable=provider_var, values=providers, height=36,
+            command=lambda value: provider_changed(value),
+        )
+        provider_menu.pack(fill="x", padx=18, pady=(0, 9))
+
+        ctk.CTkLabel(shell, text="MODEL ID (editable)", text_color=ACCENT,
+                     anchor="w", font=ctk.CTkFont(size=10, weight="bold")).pack(
+                         fill="x", padx=18, pady=(0, 3))
+        model_entry = ctk.CTkEntry(shell, height=36)
+        model_entry.insert(0, PROVIDER_CONFIGS[provider_var.get()]["model"])
+        model_entry.pack(fill="x", padx=18, pady=(0, 9))
+
+        ctk.CTkLabel(shell, text="API KEY", text_color=ACCENT,
+                     anchor="w", font=ctk.CTkFont(size=10, weight="bold")).pack(
+                         fill="x", padx=18, pady=(0, 3))
+        key_entry = ctk.CTkEntry(shell, placeholder_text="Paste API key for selected provider",
+                                 show="*", height=36)
+        key_entry.pack(fill="x", padx=18, pady=(0, 5))
+        saved_note = ctk.CTkLabel(shell, text="", text_color=SUCCESS,
+                                  anchor="w", justify="left", wraplength=510,
+                                  font=ctk.CTkFont(size=11))
+        saved_note.pack(fill="x", padx=18, pady=(0, 3))
         error_label = ctk.CTkLabel(shell, text="", text_color=DANGER,
-                                   anchor="w", justify="left", wraplength=450)
+                                   anchor="w", justify="left", wraplength=510,
+                                   font=ctk.CTkFont(size=11))
         error_label.pack(fill="x", padx=18, pady=(0, 3))
+
         actions = ctk.CTkFrame(shell, fg_color="transparent")
-        actions.pack(fill="x", padx=18, pady=(6, 14))
+        actions.pack(fill="x", padx=18, pady=(8, 14))
 
         def close_dialog() -> None:
             try:
@@ -1669,45 +1704,87 @@ class Calibrator(ctk.CTkToplevel):
                 pass
             dialog.destroy()
 
-        def start_with(key: str) -> None:
+        def refresh_provider(provider: str) -> None:
+            name = provider if provider in PROVIDER_CONFIGS else provider_var.get()
+            model_entry.delete(0, "end")
+            model_entry.insert(0, PROVIDER_CONFIGS[name]["model"])
+            key_entry.delete(0, "end")
+            error_label.configure(text="")
+            try:
+                key_holder["key"] = get_saved_api_key(name)
+            except GeminiCalibrationError as exc:
+                key_holder["key"] = None
+                error_label.configure(text=str(exc))
+            if key_holder["key"]:
+                saved_note.configure(
+                    text=f"A saved {name} key is available (hidden). You can use it or replace it below.",
+                    text_color=SUCCESS,
+                )
+                saved_button.configure(state="normal")
+            else:
+                saved_note.configure(text=f"No saved {name} key found. Paste one below.", text_color=MUTED)
+                saved_button.configure(state="disabled")
+
+        def provider_changed(value: str) -> None:
+            refresh_provider(value)
+
+        def start_with(key: str | None) -> None:
+            provider = provider_var.get()
+            model = model_entry.get().strip() or PROVIDER_CONFIGS[provider]["model"]
             if not key:
-                error_label.configure(text="Enter a Gemini API key first.")
+                error_label.configure(text=f"Enter a {provider} API key or choose Use saved key.")
+                return
+            if not model:
+                error_label.configure(text="Enter a model ID that supports image input.")
                 return
             close_dialog()
-            self._ai_begin(key)
+            self._ai_begin(key, provider, model)
+
+        def start_saved() -> None:
+            start_with(key_holder.get("key"))
 
         def save_and_start() -> None:
-            candidate = entry.get().strip()
+            provider = provider_var.get()
+            candidate = key_entry.get().strip()
             if not candidate:
-                error_label.configure(text="Enter a Gemini API key first.")
+                error_label.configure(text=f"Enter a {provider} API key first.")
                 return
             try:
-                save_api_key(candidate)
+                save_api_key(candidate, provider)
             except GeminiCalibrationError as exc:
                 error_label.configure(text=str(exc))
                 return
+            key_holder["key"] = candidate
             start_with(candidate)
 
-        if saved_key:
-            ctk.CTkButton(
-                actions, text="Use saved key & start", width=154, height=34,
-                fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="#07111f",
-                command=lambda: start_with(saved_key),
-            ).pack(side="left", padx=(0, 8))
+        saved_button = ctk.CTkButton(
+            actions, text="Use saved key & start", width=154, height=34,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="#07111f",
+            command=start_saved,
+            state="normal" if key_holder["key"] else "disabled",
+        )
+        saved_button.pack(side="left", padx=(0, 7))
         ctk.CTkButton(
-            actions, text="Save key & start", width=137, height=34,
+            actions, text="Save key & start", width=132, height=34,
             fg_color="#17466b", hover_color="#23628f", text_color=TEXT,
             command=save_and_start,
-        ).pack(side="left", padx=(0, 8))
+        ).pack(side="left", padx=(0, 7))
         ctk.CTkButton(
-            actions, text="Cancel", width=75, height=34,
+            actions, text="Get key", width=72, height=34,
+            fg_color=BG_CARD_RAISED, hover_color="#203858", text_color=TEXT,
+            command=lambda: __import__("webbrowser").open(key_urls[provider_var.get()]),
+        ).pack(side="left", padx=(0, 7))
+        ctk.CTkButton(
+            actions, text="Cancel", width=70, height=34,
             fg_color=BG_CARD_RAISED, hover_color="#203858",
             command=close_dialog,
         ).pack(side="right")
-        entry.focus_set()
+
+        refresh_provider(provider_var.get())
+        key_entry.focus_set()
 
     def _ai_make_toast(self) -> None:
-        """Create a top-right guidance notice above the game, with explicit controls."""
+        """Create a guidance notice with extra inset from the screen's right edge."""
         self._ai_close_toast()
         toast = ctk.CTkToplevel(self)
         toast.overrideredirect(True)
@@ -1717,10 +1794,11 @@ class Calibrator(ctk.CTkToplevel):
         outer = ctk.CTkFrame(toast, fg_color=BG_CARD, corner_radius=16,
                              border_width=1, border_color="#2878a8")
         outer.pack(fill="both", expand=True, padx=2, pady=2)
-        ctk.CTkLabel(outer, text="GEMINI CALIBRATION · LIVE GUIDE",
-                     text_color=ACCENT, anchor="w",
-                     font=ctk.CTkFont(size=10, weight="bold")).pack(
-                         anchor="w", padx=14, pady=(12, 3))
+        ctk.CTkLabel(
+            outer, text=f"{self._ai_provider.upper()} CALIBRATION · LIVE GUIDE",
+            text_color=ACCENT, anchor="w",
+            font=ctk.CTkFont(size=10, weight="bold"),
+        ).pack(anchor="w", padx=14, pady=(12, 3))
         self._ai_toast_label = ctk.CTkLabel(
             outer, text="Starting screenshot monitor…", text_color=TEXT,
             justify="left", anchor="nw", wraplength=382,
@@ -1743,13 +1821,20 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_stop_button.pack(side="right")
         toast.update_idletasks()
         width, height = 420, 292
-        x = max(8, toast.winfo_screenwidth() - width - 16)
-        y = 18
+        # Anchor to the actual Roblox client captured by Re-shoot when available.
+        # Keep an 88 px right inset (rather than 16 px) to avoid clipping at the
+        # display edge, and respect the game's monitor/position on multi-monitor PCs.
+        game_rect = getattr(self, "_ai_default_win", None) or getattr(self, "win", None)
+        if game_rect is not None and getattr(game_rect, "width", 0) > 0:
+            x = int(game_rect.left + game_rect.width - width - 88)
+            x = max(int(game_rect.left + 8), x)
+            y = int(game_rect.top + 18)
+        else:
+            x = max(24, toast.winfo_screenwidth() - width - 88)
+            y = 18
         toast.geometry(f"{width}x{height}+{x}+{y}")
         toast.update_idletasks()
         self._ai_toast = toast
-        # Cached absolute bounds let the worker mask its own overlay without
-        # touching Tk widgets from the capture thread.
         self._ai_overlay_rect = (
             int(toast.winfo_rootx()), int(toast.winfo_rooty()),
             int(toast.winfo_width()), int(toast.winfo_height()),
@@ -1790,8 +1875,8 @@ class Calibrator(ctk.CTkToplevel):
         if self._ai_running:
             self._ai_force_event.set()
             self._ai_toast_message(
-                "Capture requested. Keep the relevant Roblox screen visible; "
-                "the next Gemini request will run when the safe cooldown allows."
+                f"Capture requested. Keep the relevant Roblox screen visible; "
+                f"the next {self._ai_provider} request will run when the safe cooldown allows."
             )
 
     def _ai_request_stop(self) -> None:
@@ -1807,13 +1892,16 @@ class Calibrator(ctk.CTkToplevel):
         else:
             self._ai_close_toast()
 
-    def _ai_begin(self, api_key: str) -> None:
+    def _ai_begin(self, api_key: str, provider: str = "Gemini", model: str | None = None) -> None:
         if self._ai_running:
             return
-        # A previously saved session starts a new, independent preview.
+        if provider not in PROVIDER_CONFIGS:
+            raise GeminiCalibrationError("Choose a supported AI provider.")
+        model = (model or "").strip() or PROVIDER_CONFIGS[provider]["model"]
         if self._ai_committed:
             self._ai_base_values = {}
             self._ai_committed = False
+        self._ai_provider = provider
         self._ai_stop_event = threading.Event()
         self._ai_force_event = threading.Event()
         self._ai_running = True
@@ -1824,14 +1912,10 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_last_win = None
         self._ai_make_toast()
         self._ai_toast_message(
-            "Finds the real Roblox client, captures screenshots in memory, and "
-            "analyzes scene changes. Follow each NEXT STEP prompt. Press Capture "
-            "current screen after opening the requested game UI. Nothing is saved yet."
+            f"{provider} calibration is starting. Follow each NEXT STEP prompt. "
+            "Press Capture current screen after opening the requested game UI. "
+            "Nothing is saved until you review it."
         )
-        # Hide the calibration and setup windows for the duration of live
-        # capture; otherwise their own pixels can cover the game rectangle.
-        # The small top-right guidance toast is deliberately left visible and
-        # is masked out by the capture worker before any upload.
         try:
             self.master_app.withdraw()
         except Exception:  # noqa: BLE001
@@ -1843,8 +1927,8 @@ class Calibrator(ctk.CTkToplevel):
         except Exception:  # noqa: BLE001
             pass
         self._ai_thread = threading.Thread(
-            target=self._ai_worker, args=(api_key,),
-            name="FishingMacro-GeminiCalibration", daemon=True,
+            target=self._ai_worker, args=(api_key, provider, model),
+            name="FishingMacro-AICalibration", daemon=True,
         )
         self._ai_thread.start()
 
@@ -1884,7 +1968,7 @@ class Calibrator(ctk.CTkToplevel):
             return left < x1 and right > x0 and top < y1 and bottom > y0
         return True
 
-    def _ai_worker(self, api_key: str) -> None:
+    def _ai_worker(self, api_key: str, provider: str, model: str) -> None:
         """Capture only a confirmed game window; throttle API calls and stop cleanly."""
         from bloxfish.capture import Screen, find_game_window
         from PIL import Image as PILImage
@@ -1910,7 +1994,7 @@ class Calibrator(ctk.CTkToplevel):
                     error = "The 12-minute calibration session limit was reached. Review the suggestions collected so far, then start again if needed."
                     break
                 if requests_made >= max_requests:
-                    error = "The session used its limit of 18 Gemini analyses. Review the suggestions collected so far; nothing was saved automatically."
+                    error = f"The session used its limit of 18 {provider} analyses. Review the suggestions collected so far; nothing was saved automatically."
                     break
                 win, found = find_game_window(self.cfg.window_title, screen)
                 if not found:
@@ -1927,10 +2011,10 @@ class Calibrator(ctk.CTkToplevel):
                 if due and (changed or force):
                     self._ai_force_event.clear()
                     self._ai_dispatch_message(
-                        f"Capturing and analyzing screenshot {requests_made + 1}/{max_requests}…\n\n"
+                        f"Capturing and analyzing screenshot {requests_made + 1}/{max_requests} with {provider}…\n\n"
                         "Keep Roblox visible and avoid dragging or resizing the game while the request runs."
                     )
-                    result = analyze_screenshot(masked, api_key, ASSETS, timeout=35.0)
+                    result = analyze_screenshot(masked, api_key, ASSETS, timeout=35.0, provider=provider, model=model)
                     requests_made += 1
                     last_request_at = time.monotonic()
                     last_analyzed = masked.copy()
@@ -1964,7 +2048,7 @@ class Calibrator(ctk.CTkToplevel):
                     wait = max(1, int(min_request_interval - (now - last_request_at)))
                     self._ai_dispatch_message(
                         f"Capture is queued. Keep the requested Roblox screen visible; "
-                        f"the next Gemini request can run in about {wait} seconds.\n\n"
+                        f"the next {provider} request can run in about {wait} seconds.\n\n"
                         f"Accepted controls so far: {len(proposals)}. Nothing is saved yet."
                     )
                 time.sleep(0.65)
@@ -2049,7 +2133,7 @@ class Calibrator(ctk.CTkToplevel):
             result_line = "No safe, high-confidence controls were accepted. Existing calibration was left unchanged."
         if error:
             result_line += "\n" + error
-        result_line += f"\nGemini analyses used: {request_count}. Review suggestions and press Save calibration to keep them."
+        result_line += f"\n{self._ai_provider} analyses used: {request_count}. Review suggestions and press Save calibration to keep them."
         self._ai_toast_message(result_line)
         capture_button = getattr(self, "_ai_capture_button", None)
         stop_button = getattr(self, "_ai_stop_button", None)
