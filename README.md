@@ -13,6 +13,8 @@ The project is split by platform:
 
 ## 🪟 [`WINDOWS/`](WINDOWS/README.md) — the main version
 
+For the packaged app, open the [Build Windows EXE workflow](https://github.com/dragonballls/Fishing-Macro/actions/workflows/build-windows-exe.yml), choose the latest successful run, and download its `FishingMacro-Windows-x64` artifact. Extract it and run `FishingMacro.exe`. The artifact is temporary and may expire, so use the source steps below if it is unavailable.
+
 Everything you need on Windows. Download this repository (green **Code** button →
 **Download ZIP**), unzip it, then open the **`Windows`** folder and:
 
@@ -35,9 +37,9 @@ and Linux/Sober.
 > Screen capture and automated input can attract heuristic warnings, but that
 > does not establish the cause of a particular alert. Download from this
 > repository and inspect the source and the warning before allowing anything.
-> The macro is readable Python, with no bundled Windows executable; Linux also
-> includes readable setup shell/rules files. Python dependencies are installed
-> separately. See `WINDOWS/README.md` for details.
+> The source remains readable Python. Windows executables are built and smoke-tested
+> by GitHub Actions; the downloadable artifact is temporary. Linux also includes
+> readable setup shell/rules files. See `WINDOWS/README.md` for details.
 
 ## 🐧 [`LINUX/`](LINUX/README_LINUX.md) — experimental (Sober)
 
