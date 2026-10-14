@@ -43,7 +43,7 @@ jobs:
         shell: pwsh
         run: |
           python -m compileall -q WINDOWS packaging
-          python -m unittest discover -s WINDOWS/tests -p test_ai_calibration.py
+          python -m unittest discover -s WINDOWS/tests
 
       - name: Build standalone GUI executable
         shell: pwsh
