@@ -154,6 +154,7 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
         self.assertEqual(request.full_url, API_URL)
         self.assertEqual(request.get_header("X-goog-api-key"), "test-not-a-real-key")
         request_body = json.loads(request.data.decode("utf-8"))
+        self.assertNotIn("temperature", request_body["generationConfig"])
         parts = request_body["contents"][0]["parts"]
         self.assertTrue(parts[1]["inline_data"]["data"])
         self.assertTrue(parts[2]["inline_data"]["data"])

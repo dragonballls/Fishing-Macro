@@ -364,7 +364,6 @@ All suggested changes are reviewed in the app before saving.
     body = {
         "contents": [{"parts": parts}],
         "generationConfig": {
-            "temperature": 0.1,
             "responseMimeType": "application/json",
             "responseSchema": _proposal_schema(),
             "maxOutputTokens": 1800,
