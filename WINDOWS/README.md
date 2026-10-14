@@ -98,6 +98,40 @@ If the main hotkeys do not work, the window has buttons that do the same thing
 
 ## Calibrate controls
 
+### Gemini-assisted automatic calibration
+
+The calibration window includes **Gemini Auto-Calibrate**. Enter your own Gemini API
+key once; the app stores it in the operating-system credential store, not in
+`config.json`, the repository, or logs. You can replace it by entering a new key
+or remove it from Windows Credential Manager under the service
+`FishingMacro.GeminiAutoCalibration` and account `gemini-api-key`.
+
+After you start, the app captures the actual Roblox client window in memory and
+compares it with the bundled calibration reference pictures. A small notice at
+the top-right tells you which game screen to show next. Follow the instruction;
+when the requested UI is visible, use **Capture current screen** if you want to
+request an additional analysis. This is sequential, screen-guided calibration:
+hidden buttons cannot be safely located from a screenshot that does not show
+them, so the app asks you to open the matching fishing, reel, or NPC UI.
+
+The app refuses to upload a full-monitor fallback if it cannot identify the
+Roblox client, masks its own notification area before image analysis, rejects
+low-confidence or invalid coordinates, and ignores proposals that overlap the
+masked area. Screenshots are not written to disk by this feature. The actual
+game-window screenshot and bundled reference-image sheet are sent to the Google
+Gemini API, so review Google's API terms, data handling and quota/cost settings
+before using your key. Keep your key private.
+
+AI-suggested boxes and click points are only placed on the calibration canvas
+for review. **Nothing is written to `config.json` automatically.** Select each
+suggested control, check its reference image and alignment, correct anything
+that looks wrong, then click **Save calibration** yourself. If Gemini fails,
+runs out of quota, or cannot confidently identify a visible target, the existing
+calibration remains unchanged for that target. The automatic session is bounded
+to 18 analyses or 12 minutes; use **Stop & review** to finish early. Manual
+calibration, Re-shoot, and existing F2/F4 controls continue to work as before.
+
+
 Every position the bot uses is stored as a *fraction* of the game window, so it
 travels between machines — but the numbers it ships with were measured on one
 particular setup. If clicks are missing, calibrate once and you are done.

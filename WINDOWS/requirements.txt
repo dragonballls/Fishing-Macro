@@ -5,3 +5,4 @@ pygetwindow>=0.0.9
 keyboard>=0.13.5
 customtkinter>=5.2
 pillow>=10.0
+keyring>=25.6

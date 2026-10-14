@@ -43,6 +43,7 @@ jobs:
         shell: pwsh
         run: |
           python -m compileall -q WINDOWS packaging
+          python -m unittest discover -s WINDOWS/tests -p test_ai_calibration.py
 
       - name: Build standalone GUI executable
         shell: pwsh
@@ -63,6 +64,8 @@ jobs:
             "--collect-all", "pygetwindow",
             "--collect-all", "keyboard",
             "--collect-all", "PIL",
+            "--collect-all", "keyring",
+            "--collect-submodules", "keyring.backends",
             "--collect-submodules", "bloxfish",
             "WINDOWS/easy_run.py"
           )

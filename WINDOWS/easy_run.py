@@ -87,6 +87,10 @@ except ImportError:                                # noqa: BLE001
     Image = None
 
 from bloxfish.config import Config, COOLDOWNS, VERSION  # noqa: E402
+from bloxfish.ai_calibration import (  # noqa: E402
+    GeminiCalibrationError, analyze_screenshot, get_saved_api_key,
+    save_api_key, screen_changed,
+)
 from bloxfish.engine import FishingEngine          # noqa: E402
 from bloxfish import vision                        # noqa: E402
 from bloxfish.routes import buying_enabled, npc_route_enabled  # noqa: E402
@@ -1006,6 +1010,24 @@ class Calibrator(ctk.CTkToplevel):
         # user can refresh the game image without redoing their checklist, but
         # it never enters config.json and resets when this window is closed.
         self._reviewed: set[str] = set()
+        # Gemini auto-calibration runs in a cancellable worker. Results stay in
+        # memory until the user reviews them and presses Save calibration.
+        self._ai_running = False
+        self._ai_stop_event = threading.Event()
+        self._ai_force_event = threading.Event()
+        self._ai_thread = None
+        self._ai_request_count = 0
+        self._ai_pending = {}
+        self._ai_evidence = {}
+        self._ai_default_shot = None
+        self._ai_default_win = None
+        self._ai_last_shot = None
+        self._ai_last_win = None
+        self._ai_toast = None
+        self._ai_toast_label = None
+        self._ai_capture_button = None
+        self._ai_stop_button = None
+        self._ai_overlay_rect = None
         self._color_reviewed: set[str] = set()
         self._guide_expanded = False
         self._guide_lines: list[int] = []
@@ -1158,6 +1180,10 @@ class Calibrator(ctk.CTkToplevel):
         self.warn = ctk.CTkLabel(right, text="", text_color=DANGER,
                                  anchor="w", justify="left", wraplength=880,
                                  font=ctk.CTkFont(size=12, weight="bold"))
+        ctk.CTkButton(actions, text="Gemini Auto-Calibrate", width=166, height=34,
+                      fg_color="#17466b", hover_color="#23628f", text_color=TEXT,
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      command=self._ai_prompt_key).pack(side="left", padx=(0, 8))
         ctk.CTkButton(actions, text="Save calibration", width=142, height=34,
                       fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="#07111f",
                       font=ctk.CTkFont(size=12, weight="bold"),
@@ -1570,8 +1596,475 @@ class Calibrator(ctk.CTkToplevel):
         pad = 16 if it["kind"] == "dot" else 8
         self.canvas.configure(cursor="fleur" if x0 - pad <= ev.x <= x1 + pad and y0 - pad <= ev.y <= y1 + pad else "crosshair")
 
+    # -- Gemini-assisted live calibration ---------------------------------
+    def _ai_prompt_key(self) -> None:
+        """Ask for the Gemini key locally; never reveal or log a stored key."""
+        if self._ai_running:
+            self._ai_toast_message("Gemini calibration is already active. Use the top-right notice to guide or stop it.")
+            return
+        try:
+            saved_key = get_saved_api_key()
+        except GeminiCalibrationError as exc:
+            from tkinter import messagebox
+            messagebox.showerror("Gemini key storage", str(exc), parent=self)
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Gemini Auto-Calibrate")
+        dialog.geometry("520x390")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.attributes("-topmost", True)
+        dialog.configure(fg_color=APP_BG)
+        dialog.grab_set()
+
+        shell = ctk.CTkFrame(dialog, fg_color=BG_CARD, corner_radius=16,
+                             border_width=1, border_color=BORDER)
+        shell.pack(fill="both", expand=True, padx=16, pady=16)
+        ctk.CTkLabel(shell, text="Gemini Auto-Calibrate", text_color=TEXT,
+                     font=ctk.CTkFont(size=19, weight="bold")).pack(
+                         anchor="w", padx=18, pady=(17, 6))
+        ctk.CTkLabel(
+            shell,
+            text=("The app will capture the Roblox game window, compare it with "
+                  "the bundled calibration reference images, and suggest box / "
+                  "click-point positions. Follow the top-right prompts to show "
+                  "different game screens. Nothing is saved until you review "
+                  "the canvas and press Save calibration."),
+            text_color="#c5d7e9", justify="left", anchor="w", wraplength=450,
+            font=ctk.CTkFont(size=11),
+        ).pack(fill="x", padx=18, pady=(0, 10))
+        ctk.CTkLabel(
+            shell,
+            text=("Privacy: screenshots of the confirmed Roblox client window and "
+                  "bundled reference images are sent to Google Gemini for analysis. "
+                  "Screenshots are not saved by this feature. Your API key is stored "
+                  "in the operating-system credential store, not config.json."),
+            text_color="#fbbf24", justify="left", anchor="w", wraplength=450,
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).pack(fill="x", padx=18, pady=(0, 10))
+        if saved_key:
+            ctk.CTkLabel(shell, text="A saved Gemini key is available (the key is hidden).",
+                         text_color=SUCCESS, anchor="w",
+                         font=ctk.CTkFont(size=11)).pack(
+                             fill="x", padx=18, pady=(0, 4))
+        entry = ctk.CTkEntry(shell, placeholder_text="Paste Gemini API key",
+                             show="*", height=36)
+        entry.pack(fill="x", padx=18, pady=(0, 4))
+        error_label = ctk.CTkLabel(shell, text="", text_color=DANGER,
+                                   anchor="w", justify="left", wraplength=450)
+        error_label.pack(fill="x", padx=18, pady=(0, 3))
+        actions = ctk.CTkFrame(shell, fg_color="transparent")
+        actions.pack(fill="x", padx=18, pady=(6, 14))
+
+        def close_dialog() -> None:
+            try:
+                dialog.grab_release()
+            except Exception:  # noqa: BLE001
+                pass
+            dialog.destroy()
+
+        def start_with(key: str) -> None:
+            if not key:
+                error_label.configure(text="Enter a Gemini API key first.")
+                return
+            close_dialog()
+            self._ai_begin(key)
+
+        def save_and_start() -> None:
+            candidate = entry.get().strip()
+            if not candidate:
+                error_label.configure(text="Enter a Gemini API key first.")
+                return
+            try:
+                save_api_key(candidate)
+            except GeminiCalibrationError as exc:
+                error_label.configure(text=str(exc))
+                return
+            start_with(candidate)
+
+        if saved_key:
+            ctk.CTkButton(
+                actions, text="Use saved key & start", width=154, height=34,
+                fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="#07111f",
+                command=lambda: start_with(saved_key),
+            ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions, text="Save key & start", width=137, height=34,
+            fg_color="#17466b", hover_color="#23628f", text_color=TEXT,
+            command=save_and_start,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions, text="Cancel", width=75, height=34,
+            fg_color=BG_CARD_RAISED, hover_color="#203858",
+            command=close_dialog,
+        ).pack(side="right")
+        entry.focus_set()
+
+    def _ai_make_toast(self) -> None:
+        """Create a top-right guidance notice above the game, with explicit controls."""
+        self._ai_close_toast()
+        toast = ctk.CTkToplevel(self)
+        toast.overrideredirect(True)
+        toast.attributes("-topmost", True)
+        toast.configure(fg_color=APP_BG)
+        toast.geometry("420x292")
+        outer = ctk.CTkFrame(toast, fg_color=BG_CARD, corner_radius=16,
+                             border_width=1, border_color="#2878a8")
+        outer.pack(fill="both", expand=True, padx=2, pady=2)
+        ctk.CTkLabel(outer, text="GEMINI CALIBRATION · LIVE GUIDE",
+                     text_color=ACCENT, anchor="w",
+                     font=ctk.CTkFont(size=10, weight="bold")).pack(
+                         anchor="w", padx=14, pady=(12, 3))
+        self._ai_toast_label = ctk.CTkLabel(
+            outer, text="Starting screenshot monitor…", text_color=TEXT,
+            justify="left", anchor="nw", wraplength=382,
+            font=ctk.CTkFont(size=11),
+        )
+        self._ai_toast_label.pack(fill="both", expand=True, padx=14, pady=(2, 8))
+        actions = ctk.CTkFrame(outer, fg_color="transparent")
+        actions.pack(fill="x", padx=12, pady=(0, 11))
+        self._ai_capture_button = ctk.CTkButton(
+            actions, text="Capture current screen", height=32, width=172,
+            fg_color="#17466b", hover_color="#23628f",
+            command=self._ai_request_capture,
+        )
+        self._ai_capture_button.pack(side="left", padx=(0, 8))
+        self._ai_stop_button = ctk.CTkButton(
+            actions, text="Stop & review", height=32, width=112,
+            fg_color=BG_CARD_RAISED, hover_color="#4c2a38",
+            command=self._ai_request_stop,
+        )
+        self._ai_stop_button.pack(side="right")
+        toast.update_idletasks()
+        width, height = 420, 292
+        x = max(8, toast.winfo_screenwidth() - width - 16)
+        y = 18
+        toast.geometry(f"{width}x{height}+{x}+{y}")
+        toast.update_idletasks()
+        self._ai_toast = toast
+        # Cached absolute bounds let the worker mask its own overlay without
+        # touching Tk widgets from the capture thread.
+        self._ai_overlay_rect = (
+            int(toast.winfo_rootx()), int(toast.winfo_rooty()),
+            int(toast.winfo_width()), int(toast.winfo_height()),
+        )
+
+    def _ai_close_toast(self) -> None:
+        toast = getattr(self, "_ai_toast", None)
+        self._ai_toast = None
+        self._ai_toast_label = None
+        self._ai_capture_button = None
+        self._ai_stop_button = None
+        self._ai_overlay_rect = None
+        if toast is not None:
+            try:
+                if toast.winfo_exists():
+                    toast.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _ai_toast_message(self, message: str) -> None:
+        """Update the top-right notice only on the UI thread."""
+        label = getattr(self, "_ai_toast_label", None)
+        if label is None:
+            return
+        try:
+            if label.winfo_exists():
+                label.configure(text=message)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _ai_dispatch_message(self, message: str) -> None:
+        try:
+            self.after(0, lambda m=message: self._ai_toast_message(m))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _ai_request_capture(self) -> None:
+        if self._ai_running:
+            self._ai_force_event.set()
+            self._ai_toast_message(
+                "Capture requested. Keep the relevant Roblox screen visible; "
+                "the next Gemini request will run when the safe cooldown allows."
+            )
+
+    def _ai_request_stop(self) -> None:
+        if self._ai_running:
+            self._ai_stop_event.set()
+            self._ai_toast_message("Stopping capture safely and preparing the review canvas…")
+            button = getattr(self, "_ai_stop_button", None)
+            if button is not None:
+                try:
+                    button.configure(state="disabled", text="Stopping…")
+                except Exception:  # noqa: BLE001
+                    pass
+        else:
+            self._ai_close_toast()
+
+    def _ai_begin(self, api_key: str) -> None:
+        if self._ai_running:
+            return
+        self._ai_stop_event = threading.Event()
+        self._ai_force_event = threading.Event()
+        self._ai_running = True
+        self._ai_request_count = 0
+        self._ai_pending = {}
+        self._ai_evidence = {}
+        self._ai_last_shot = None
+        self._ai_last_win = None
+        self._ai_make_toast()
+        self._ai_toast_message(
+            "Finds the real Roblox client, captures screenshots in memory, and "
+            "analyzes scene changes. Follow each NEXT STEP prompt. Press Capture "
+            "current screen after opening the requested game UI. Nothing is saved yet."
+        )
+        # Hide the calibration and setup windows for the duration of live
+        # capture; otherwise their own pixels can cover the game rectangle.
+        # The small top-right guidance toast is deliberately left visible and
+        # is masked out by the capture worker before any upload.
+        try:
+            self.master_app.withdraw()
+        except Exception:  # noqa: BLE001
+            pass
+        self.withdraw()
+        try:
+            if self._ai_toast is not None:
+                self._ai_toast.lift()
+        except Exception:  # noqa: BLE001
+            pass
+        self._ai_thread = threading.Thread(
+            target=self._ai_worker, args=(api_key,),
+            name="FishingMacro-GeminiCalibration", daemon=True,
+        )
+        self._ai_thread.start()
+
+    @staticmethod
+    def _ai_mask_overlay(frame, win, overlay_rect):
+        """Mask the notice before upload; never show the assistant its own pixels."""
+        if overlay_rect is None:
+            return frame.copy(), None
+        try:
+            ox, oy, ow, oh = overlay_rect
+            x0 = max(0, ox - win.left)
+            y0 = max(0, oy - win.top)
+            x1 = min(win.width, ox + ow - win.left)
+            y1 = min(win.height, oy + oh - win.top)
+            if x1 <= x0 or y1 <= y0:
+                return frame.copy(), None
+            masked = frame.copy()
+            masked[y0:y1, x0:x1] = (18, 25, 38)
+            bounds = (x0 / win.width, y0 / win.height,
+                      x1 / win.width, y1 / win.height)
+            return masked, bounds
+        except Exception:  # noqa: BLE001
+            return frame.copy(), None
+
+    @staticmethod
+    def _ai_hits_mask(proposal, bounds) -> bool:
+        """Discard suggestions touching the masked notice area."""
+        if not bounds:
+            return False
+        x0, y0, x1, y1 = bounds
+        coords = proposal.get("coords", ())
+        if proposal.get("kind") == "dot" and len(coords) == 2:
+            x, y = coords
+            return x0 <= x <= x1 and y0 <= y <= y1
+        if proposal.get("kind") == "box" and len(coords) == 4:
+            left, top, right, bottom = coords
+            return left < x1 and right > x0 and top < y1 and bottom > y0
+        return True
+
+    def _ai_worker(self, api_key: str) -> None:
+        """Capture only a confirmed game window; throttle API calls and stop cleanly."""
+        from bloxfish.capture import Screen, find_game_window
+        from PIL import Image as PILImage
+
+        screen = None
+        proposals = {}
+        evidence = {}
+        last_analyzed = None
+        last_frame = None
+        last_win = None
+        error = None
+        requests_made = 0
+        started = time.monotonic()
+        last_request_at = 0.0
+        min_request_interval = 8.0
+        max_requests = 18
+        deadline = started + 12 * 60
+        try:
+            screen = Screen()
+            while not self._ai_stop_event.is_set():
+                now = time.monotonic()
+                if now >= deadline:
+                    error = "The 12-minute calibration session limit was reached. Review the suggestions collected so far, then start again if needed."
+                    break
+                if requests_made >= max_requests:
+                    error = "The session used its limit of 18 Gemini analyses. Review the suggestions collected so far; nothing was saved automatically."
+                    break
+                win, found = find_game_window(self.cfg.window_title, screen)
+                if not found:
+                    error = "Roblox was not detected as a real client window. Open the Roblox client, keep it visible, and start Gemini Auto-Calibrate again. No full-screen fallback was uploaded."
+                    break
+                frame = screen.grab(win)
+                masked, mask_bounds = self._ai_mask_overlay(
+                    frame, win, self._ai_overlay_rect
+                )
+                last_frame, last_win = masked.copy(), win
+                force = self._ai_force_event.is_set()
+                changed = (last_analyzed is None or screen_changed(last_analyzed, masked))
+                due = now - last_request_at >= min_request_interval
+                if due and (changed or force):
+                    self._ai_force_event.clear()
+                    self._ai_dispatch_message(
+                        f"Capturing and analyzing screenshot {requests_made + 1}/{max_requests}…\n\n"
+                        "Keep Roblox visible and avoid dragging or resizing the game while the request runs."
+                    )
+                    result = analyze_screenshot(masked, api_key, ASSETS, timeout=35.0)
+                    requests_made += 1
+                    last_request_at = time.monotonic()
+                    last_analyzed = masked.copy()
+                    accepted_now = 0
+                    for proposal in result.get("proposals", []):
+                        if self._ai_hits_mask(proposal, mask_bounds):
+                            continue
+                        key = proposal["key"]
+                        previous = proposals.get(key)
+                        if previous is None or proposal["confidence"] > previous["confidence"]:
+                            proposals[key] = proposal
+                            evidence[key] = {
+                                "shot": PILImage.fromarray(masked[:, :, ::-1].copy()),
+                                "win": win,
+                                "found": True,
+                                "state": result["screen_state"],
+                                "confidence": proposal["confidence"],
+                                "evidence": proposal["evidence"],
+                            }
+                        accepted_now += 1
+                    summary = result["summary"][:125]
+                    instruction = result["next_instruction"][:200]
+                    self._ai_dispatch_message(
+                        f"{summary}\n\nNEXT STEP\n{instruction}\n\n"
+                        f"High-confidence targets found: {len(proposals)} unique "
+                        f"controls · analysis {requests_made}/{max_requests}. "
+                        "Use Capture current screen after changing the visible game state. "
+                        "Suggestions remain unsaved until you review and press Save calibration."
+                    )
+                elif force and not due:
+                    wait = max(1, int(min_request_interval - (now - last_request_at)))
+                    self._ai_dispatch_message(
+                        f"Capture is queued. Keep the requested Roblox screen visible; "
+                        f"the next Gemini request can run in about {wait} seconds.\n\n"
+                        f"Accepted controls so far: {len(proposals)}. Nothing is saved yet."
+                    )
+                time.sleep(0.65)
+        except GeminiCalibrationError as exc:
+            error = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            error = f"Calibration stopped safely ({type(exc).__name__}). Check Roblox is open, then retry."
+        finally:
+            if screen is not None:
+                screen.close()
+            self._ai_request_count = requests_made
+            self._ai_pending = dict(proposals)
+            self._ai_evidence = dict(evidence)
+            try:
+                self.after(0, lambda: self._ai_finish(
+                    proposals, evidence, last_frame, last_win, error, requests_made
+                ))
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _ai_finish(self, proposals, evidence, last_frame, last_win,
+                   error: str | None, request_count: int) -> None:
+        """Apply proposals to the review canvas only; do not write config.json."""
+        # Restore the workspace only after capture stops, before touching its
+        # canvas. The notice stays topmost with the final summary until closed.
+        try:
+            self.master_app.deiconify()
+            self.deiconify()
+            self.lift()
+        except Exception:  # noqa: BLE001
+            pass
+        self._ai_running = False
+        self._ai_pending = dict(proposals)
+        self._ai_evidence = dict(evidence)
+        self._ai_last_shot = last_frame
+        self._ai_last_win = last_win
+
+        for key, proposal in proposals.items():
+            spec = _group_of(key)[3]
+            if not spec:
+                continue
+            kind, holder, fields = spec[1], spec[2], spec[3]
+            target = getattr(self.cfg, holder)
+            coords = proposal["coords"]
+            if kind == "box" and len(fields) == 4 and len(coords) == 4:
+                for field, value in zip(fields, coords):
+                    setattr(target, field, float(value))
+            elif kind == "dot" and len(fields) == 1 and len(coords) == 2:
+                setattr(target, fields[0], (float(coords[0]), float(coords[1])))
+
+        # Keep the optional tight zone detector off unless the user already
+        # enabled it; auto-calibrating a box must never silently change behavior.
+        if last_frame is not None and last_win is not None:
+            self._shot = Image.fromarray(last_frame[:, :, ::-1])
+            self.win = last_win
+            self.found = True
+            try:
+                self.zoom_shot_btn.configure(state="normal")
+            except Exception:  # noqa: BLE001
+                pass
+
+        if proposals:
+            first_key = next(iter(proposals))
+            # Selecting an item switches the review image to the state where
+            # Gemini saw that control. No check-list item is marked reviewed.
+            self.select(first_key)
+            self._set_interaction(
+                "Gemini suggestions are overlaid for review. Select each affected control, check the reference and position, then click Save calibration. No config file was written.",
+                SUCCESS,
+            )
+            result_line = f"Finished: {len(proposals)} unique control(s) suggested."
+        else:
+            if last_frame is not None and last_win is not None:
+                self._fit()
+            result_line = "No safe, high-confidence controls were accepted. Existing calibration was left unchanged."
+        if error:
+            result_line += "\n" + error
+        result_line += f"\nGemini analyses used: {request_count}. Review suggestions and press Save calibration to keep them."
+        self._ai_toast_message(result_line)
+        capture_button = getattr(self, "_ai_capture_button", None)
+        stop_button = getattr(self, "_ai_stop_button", None)
+        if capture_button is not None:
+            try:
+                capture_button.configure(state="disabled")
+            except Exception:  # noqa: BLE001
+                pass
+        if stop_button is not None:
+            try:
+                stop_button.configure(text="Close notice", state="normal",
+                                      command=self._ai_close_toast)
+            except Exception:  # noqa: BLE001
+                pass
+
     # -- read-only inspection ---------------------------------------------
     def destroy(self) -> None:
+        # If the workspace is closed mid-session, do not leave the main setup
+        # window hidden. The worker is daemonized and will stop on this event.
+        try:
+            if getattr(self, "_ai_running", False):
+                self._ai_stop_event.set()
+                self.master_app.deiconify()
+        except Exception:  # noqa: BLE001
+            pass
+        # Stop screenshot monitoring before tearing down any Tk widgets.
+        try:
+            self._ai_stop_event.set()
+        except Exception:  # noqa: BLE001
+            pass
+        self._ai_close_toast()
         # Close transient viewers before tearing down their owner/widgets.
         self._close_inspector()
         super().destroy()
@@ -1654,6 +2147,8 @@ class Calibrator(ctk.CTkToplevel):
         if Image is None:
             return
         self._shot = Image.fromarray(shot[:, :, ::-1])
+        self._ai_default_shot = self._shot.copy()
+        self._ai_default_win = self.win
         self.zoom_shot_btn.configure(state="normal")
         self._fit()
         self._restore_review_snapshot(review_state)
@@ -1855,6 +2350,19 @@ class Calibrator(ctk.CTkToplevel):
         list stops responding and the tool looks frozen."""
         self.sel = key
         self.pick = None                       # leave color-pick mode
+        ai_evidence = getattr(self, "_ai_evidence", {}).get(key)
+        if ai_evidence:
+            self._shot = ai_evidence["shot"].copy()
+            self.win = ai_evidence["win"]
+            self.found = True
+            refresh_ai_shot = True
+        elif getattr(self, "_ai_default_shot", None) is not None:
+            self._shot = self._ai_default_shot.copy()
+            self.win = self._ai_default_win
+            self.found = True
+            refresh_ai_shot = True
+        else:
+            refresh_ai_shot = False
         self.color_frame.grid_remove()
         if key == "zone_track":
             self.ztrack_var.set(bool(self.cfg.detection.zone_track_on))
@@ -1872,7 +2380,10 @@ class Calibrator(ctk.CTkToplevel):
                 "Selected a click point — drag the large ring to the centre of the matching button.",
                 color)
         self._style_nav()
-        self.redraw()
+        if refresh_ai_shot:
+            self._fit()
+        else:
+            self.redraw()
 
     # -- Advanced: per-machine color capture ------------------------------
     def select_color(self, key: str) -> None:
