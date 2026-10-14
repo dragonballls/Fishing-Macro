@@ -1821,10 +1821,17 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_stop_button.pack(side="right")
         toast.update_idletasks()
         width, height = 420, 292
-        # 88 px inset instead of 16 px; this prevents the notice being clipped
-        # by right-edge work-area/DPI rounding on some Windows displays.
-        x = max(24, toast.winfo_screenwidth() - width - 88)
-        y = 18
+        # Anchor to the actual Roblox client captured by Re-shoot when available.
+        # Keep an 88 px right inset (rather than 16 px) to avoid clipping at the
+        # display edge, and respect the game's monitor/position on multi-monitor PCs.
+        game_rect = getattr(self, "_ai_default_win", None) or getattr(self, "win", None)
+        if game_rect is not None and getattr(game_rect, "width", 0) > 0:
+            x = int(game_rect.left + game_rect.width - width - 88)
+            x = max(int(game_rect.left + 8), x)
+            y = int(game_rect.top + 18)
+        else:
+            x = max(24, toast.winfo_screenwidth() - width - 88)
+            y = 18
         toast.geometry(f"{width}x{height}+{x}+{y}")
         toast.update_idletasks()
         self._ai_toast = toast
