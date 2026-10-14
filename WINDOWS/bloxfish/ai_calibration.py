@@ -38,7 +38,7 @@ PROVIDER_CONFIGS = {
     "Groq": {
         "kind": "openai",
         "endpoint": "https://api.groq.com/openai/v1/chat/completions",
-        "model": "qwen/qwen3.6-27b",
+        "model": "qwen/qwen3.8-27b",
     },
     "OpenAI": {
         "kind": "openai",
@@ -48,7 +48,7 @@ PROVIDER_CONFIGS = {
     "Mistral": {
         "kind": "openai",
         "endpoint": "https://api.mistral.ai/v1/chat/completions",
-        "model": "ministral-14b-latest",
+        "model": "ministral-14b-2512",
     },
 }
 PROVIDERS = tuple(PROVIDER_CONFIGS)
