@@ -11,6 +11,7 @@ sys.path.insert(0, str(WINDOWS))
 
 from bloxfish.ai_calibration import (  # noqa: E402
     API_URL,
+    PROVIDER_CONFIGS,
     GeminiCalibrationError,
     analyze_screenshot,
     screen_changed,
@@ -160,6 +161,47 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
         self.assertTrue(parts[2]["inline_data"]["data"])
         self.assertEqual(result["proposals"][0]["key"], "bar_search")
         self.assertGreaterEqual(result["proposals"][0]["confidence"], 0.78)
+
+
+
+    @unittest.skipUnless(__import__("importlib").util.find_spec("PIL") and
+                         __import__("importlib").util.find_spec("numpy"),
+                         "requires Pillow and NumPy")
+    def test_groq_vision_provider_sends_images_and_parses_json(self):
+        import numpy as np
+        answer = {
+            "screen_state": "reel_minigame",
+            "summary": "Visible reel track.",
+            "next_instruction": "Open the NPC menu next.",
+            "regions": [{
+                "key": "bar_search", "kind": "box",
+                "coords": [35, 380, 965, 950],
+                "confidence": 0.96, "evidence": "Full reel track is visible",
+            }],
+        }
+        body = json.dumps({
+            "choices": [{"message": {"content": json.dumps(answer)}}]
+        }).encode("utf-8")
+        fake_response = mock.MagicMock()
+        fake_response.__enter__.return_value.read.return_value = body
+        frame = np.zeros((480, 800, 3), dtype=np.uint8)
+        with mock.patch("urllib.request.urlopen", return_value=fake_response) as opened:
+            result = analyze_screenshot(
+                frame, "groq-test-key-not-real", WINDOWS / "assets" / "gui",
+                provider="Groq", model="qwen/qwen3.6-27b",
+            )
+        request = opened.call_args.args[0]
+        self.assertEqual(request.full_url, PROVIDER_CONFIGS["Groq"]["endpoint"])
+        self.assertEqual(request.get_header("Authorization"), "Bearer groq-test-key-not-real")
+        body_sent = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(body_sent["model"], "qwen/qwen3.6-27b")
+        self.assertEqual(body_sent["response_format"], {"type": "json_object"})
+        contents = body_sent["messages"][0]["content"]
+        self.assertEqual(contents[0]["type"], "text")
+        images = [part for part in contents if part.get("type") == "image_url"]
+        self.assertGreaterEqual(len(images), 1)
+        self.assertTrue(images[0]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        self.assertEqual(result["proposals"][0]["key"], "bar_search")
 
 
 if __name__ == "__main__":
