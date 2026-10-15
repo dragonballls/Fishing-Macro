@@ -20,6 +20,7 @@ from bloxfish.ai_calibration import (  # noqa: E402
     analyze_screenshot_with_fallback,
     is_quota_or_credit_error,
     screen_changed,
+    should_analyze_frame,
     should_replace_proposal,
     validate_response,
 )
@@ -289,6 +290,62 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
             GeminiCalibrationError("The model does not support vision.")
         ))
 
+
+
+
+
+class AutomaticAnalysisSchedulingTests(unittest.TestCase):
+    def test_first_visible_frame_is_analyzed_without_button_input(self):
+        self.assertTrue(should_analyze_frame(
+            None, object(), elapsed_since_last_request=100.0
+        ))
+
+    def test_cooldown_limits_even_manual_override(self):
+        self.assertFalse(should_analyze_frame(
+            None, object(), elapsed_since_last_request=3.0,
+            min_request_interval=15.0, force=True,
+        ))
+
+    @unittest.skipUnless(
+        __import__("importlib").util.find_spec("numpy") and
+        __import__("importlib").util.find_spec("cv2"),
+        "requires OpenCV and NumPy",
+    )
+    def test_periodic_refresh_analyzes_a_steady_scene_automatically(self):
+        import numpy as np
+        frame = np.zeros((120, 200, 3), dtype=np.uint8)
+        self.assertTrue(should_analyze_frame(
+            frame, frame.copy(), elapsed_since_last_request=30.0,
+            min_request_interval=15.0, refresh_interval=30.0,
+        ))
+
+    @unittest.skipUnless(
+        __import__("importlib").util.find_spec("numpy") and
+        __import__("importlib").util.find_spec("cv2"),
+        "requires OpenCV and NumPy",
+    )
+    def test_meaningful_screen_change_triggers_automatic_analysis(self):
+        import numpy as np
+        first = np.zeros((120, 200, 3), dtype=np.uint8)
+        second = first.copy()
+        second[20:100, 30:175, :] = 255
+        self.assertTrue(should_analyze_frame(
+            first, second, elapsed_since_last_request=18.0,
+            min_request_interval=15.0, refresh_interval=30.0,
+        ))
+
+    @unittest.skipUnless(
+        __import__("importlib").util.find_spec("numpy") and
+        __import__("importlib").util.find_spec("cv2"),
+        "requires OpenCV and NumPy",
+    )
+    def test_unchanged_scene_waits_until_periodic_refresh(self):
+        import numpy as np
+        frame = np.zeros((120, 200, 3), dtype=np.uint8)
+        self.assertFalse(should_analyze_frame(
+            frame, frame.copy(), elapsed_since_last_request=20.0,
+            min_request_interval=15.0, refresh_interval=30.0,
+        ))
 
 
 class ProviderFallbackTests(unittest.TestCase):
