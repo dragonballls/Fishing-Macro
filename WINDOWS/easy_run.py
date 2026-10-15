@@ -2095,9 +2095,10 @@ class Calibrator(ctk.CTkToplevel):
         active_provider = provider
         active_model = model
         active_api_key = api_key
-        min_request_interval = 8.0
-        max_requests = 18
-        deadline = started + 12 * 60
+        min_request_interval = 15.0
+        auto_refresh_interval = 30.0
+        max_requests = 90
+        deadline = started + 60 * 60
         try:
             screen = Screen()
 
@@ -2125,7 +2126,7 @@ class Calibrator(ctk.CTkToplevel):
                                 recording_state["path"] = str(recorder.start(rec_frame))
                                 self._ai_dispatch_message(
                                     "Local Roblox video recording started. The file stays on "
-                                    "this PC; AI receives only stills you manually request."
+                                    "this PC; AI automatically receives sampled stills, not the video."
                                 )
                             else:
                                 recorder.write(rec_frame)
@@ -2159,10 +2160,6 @@ class Calibrator(ctk.CTkToplevel):
 
             last_analyzed = None
             last_cooldown_notice = 0.0
-            min_request_interval = 8.0
-            auto_refresh_interval = 25.0
-            max_requests = 60
-            deadline = started + 60 * 60
             ai_paused = False
             self._ai_analysis_paused = False
 
