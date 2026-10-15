@@ -88,9 +88,10 @@ except ImportError:                                # noqa: BLE001
 
 from bloxfish.config import Config, COOLDOWNS, VERSION  # noqa: E402
 from bloxfish.ai_calibration import (  # noqa: E402
-    GeminiCalibrationError, PROVIDERS, PROVIDER_CONFIGS, analyze_screenshot,
-    capture_config_values, get_saved_api_key, restore_config_values,
-    save_api_key, screen_changed,
+    GeminiCalibrationError, LOCAL_DOWNLOAD_URL, LOCAL_MODEL, LOCAL_MODEL_URL,
+    LOCAL_PROVIDER, PROVIDERS, PROVIDER_CONFIGS, analyze_screenshot,
+    capture_config_values, get_saved_api_key, is_quota_or_credit_error,
+    restore_config_values, save_api_key, screen_changed,
 )
 from bloxfish.engine import FishingEngine          # noqa: E402
 from bloxfish import vision                        # noqa: E402
@@ -1679,11 +1680,15 @@ class Calibrator(ctk.CTkToplevel):
         model_entry.insert(0, PROVIDER_CONFIGS[provider_var.get()]["model"])
         model_entry.pack(fill="x", padx=18, pady=(0, 9))
 
-        ctk.CTkLabel(shell, text="API KEY", text_color=ACCENT,
-                     anchor="w", font=ctk.CTkFont(size=10, weight="bold")).pack(
-                         fill="x", padx=18, pady=(0, 3))
-        key_entry = ctk.CTkEntry(shell, placeholder_text="Paste API key for selected provider",
-                                 show="*", height=36)
+        key_label = ctk.CTkLabel(
+            shell, text="API KEY", text_color=ACCENT, anchor="w",
+            font=ctk.CTkFont(size=10, weight="bold"),
+        )
+        key_label.pack(fill="x", padx=18, pady=(0, 3))
+        key_entry = ctk.CTkEntry(
+            shell, placeholder_text="Paste API key for selected provider",
+            show="*", height=36,
+        )
         key_entry.pack(fill="x", padx=18, pady=(0, 5))
         saved_note = ctk.CTkLabel(shell, text="", text_color=SUCCESS,
                                   anchor="w", justify="left", wraplength=510,
@@ -1708,8 +1713,41 @@ class Calibrator(ctk.CTkToplevel):
             name = provider if provider in PROVIDER_CONFIGS else provider_var.get()
             model_entry.delete(0, "end")
             model_entry.insert(0, PROVIDER_CONFIGS[name]["model"])
+            key_entry.configure(state="normal", show="*", placeholder_text="Paste API key for selected provider")
             key_entry.delete(0, "end")
             error_label.configure(text="")
+            if name == LOCAL_PROVIDER:
+                key_holder["key"] = None
+                key_label.configure(text="API KEY · NOT NEEDED FOR LOCAL LLM")
+                key_entry.configure(
+                    state="disabled", show="", placeholder_text="Ollama does not use an API key"
+                )
+                saved_note.configure(
+                    text=("Runs on this PC without API charges. Install Ollama and download "
+                          f"the vision model first: ollama pull {LOCAL_MODEL} (about 3.2 GB). "
+                          "It can use substantial RAM/VRAM while Roblox is open."),
+                    text_color=WARNING,
+                )
+                saved_button.configure(text="Start local LLM", state="normal")
+                save_button.configure(
+                    text="Model guide",
+                    command=lambda: __import__("webbrowser").open(LOCAL_MODEL_URL),
+                )
+                get_button.configure(
+                    text="Install Ollama",
+                    command=lambda: __import__("webbrowser").open(LOCAL_DOWNLOAD_URL),
+                    state="normal",
+                )
+                return
+
+            key_label.configure(text="API KEY")
+            saved_button.configure(text="Use saved key & start")
+            save_button.configure(text="Save key & start", command=save_and_start)
+            get_button.configure(
+                text="Get key",
+                command=lambda: __import__("webbrowser").open(key_urls[provider_var.get()]),
+                state="normal",
+            )
             try:
                 key_holder["key"] = get_saved_api_key(name)
             except GeminiCalibrationError as exc:
@@ -1731,20 +1769,23 @@ class Calibrator(ctk.CTkToplevel):
         def start_with(key: str | None) -> None:
             provider = provider_var.get()
             model = model_entry.get().strip() or PROVIDER_CONFIGS[provider]["model"]
-            if not key:
+            if provider != LOCAL_PROVIDER and not key:
                 error_label.configure(text=f"Enter a {provider} API key or choose Use saved key.")
                 return
             if not model:
                 error_label.configure(text="Enter a model ID that supports image input.")
                 return
             close_dialog()
-            self._ai_begin(key, provider, model)
+            self._ai_begin(key or "", provider, model)
 
         def start_saved() -> None:
             start_with(key_holder.get("key"))
 
         def save_and_start() -> None:
             provider = provider_var.get()
+            if provider == LOCAL_PROVIDER:
+                start_with(None)
+                return
             candidate = key_entry.get().strip()
             if not candidate:
                 error_label.configure(text=f"Enter a {provider} API key first.")
@@ -1764,16 +1805,18 @@ class Calibrator(ctk.CTkToplevel):
             state="normal" if key_holder["key"] else "disabled",
         )
         saved_button.pack(side="left", padx=(0, 7))
-        ctk.CTkButton(
+        save_button = ctk.CTkButton(
             actions, text="Save key & start", width=132, height=34,
             fg_color="#17466b", hover_color="#23628f", text_color=TEXT,
             command=save_and_start,
-        ).pack(side="left", padx=(0, 7))
-        ctk.CTkButton(
-            actions, text="Get key", width=72, height=34,
+        )
+        save_button.pack(side="left", padx=(0, 7))
+        get_button = ctk.CTkButton(
+            actions, text="Get key", width=94, height=34,
             fg_color=BG_CARD_RAISED, hover_color="#203858", text_color=TEXT,
             command=lambda: __import__("webbrowser").open(key_urls[provider_var.get()]),
-        ).pack(side="left", padx=(0, 7))
+        )
+        get_button.pack(side="left", padx=(0, 7))
         ctk.CTkButton(
             actions, text="Cancel", width=70, height=34,
             fg_color=BG_CARD_RAISED, hover_color="#203858",
@@ -1794,11 +1837,12 @@ class Calibrator(ctk.CTkToplevel):
         outer = ctk.CTkFrame(toast, fg_color=BG_CARD, corner_radius=16,
                              border_width=1, border_color="#2878a8")
         outer.pack(fill="both", expand=True, padx=2, pady=2)
-        ctk.CTkLabel(
+        self._ai_toast_title = ctk.CTkLabel(
             outer, text=f"{self._ai_provider.upper()} CALIBRATION · LIVE GUIDE",
             text_color=ACCENT, anchor="w",
             font=ctk.CTkFont(size=10, weight="bold"),
-        ).pack(anchor="w", padx=14, pady=(12, 3))
+        )
+        self._ai_toast_title.pack(anchor="w", padx=14, pady=(12, 3))
         self._ai_toast_label = ctk.CTkLabel(
             outer, text="Starting screenshot monitor…", text_color=TEXT,
             justify="left", anchor="nw", wraplength=382,
@@ -1844,6 +1888,7 @@ class Calibrator(ctk.CTkToplevel):
         toast = getattr(self, "_ai_toast", None)
         self._ai_toast = None
         self._ai_toast_label = None
+        self._ai_toast_title = None
         self._ai_capture_button = None
         self._ai_stop_button = None
         self._ai_overlay_rect = None
@@ -1862,6 +1907,9 @@ class Calibrator(ctk.CTkToplevel):
         try:
             if label.winfo_exists():
                 label.configure(text=message)
+            title = getattr(self, "_ai_toast_title", None)
+            if title is not None and title.winfo_exists():
+                title.configure(text=f"{self._ai_provider.upper()} CALIBRATION · LIVE GUIDE")
         except Exception:  # noqa: BLE001
             pass
 
@@ -1897,6 +1945,9 @@ class Calibrator(ctk.CTkToplevel):
             return
         if provider not in PROVIDER_CONFIGS:
             raise GeminiCalibrationError("Choose a supported AI provider.")
+        if provider != LOCAL_PROVIDER and not (api_key or "").strip():
+            raise GeminiCalibrationError(f"No {provider} API key was provided.")
+        api_key = api_key or ""
         model = (model or "").strip() or PROVIDER_CONFIGS[provider]["model"]
         if self._ai_committed:
             self._ai_base_values = {}
@@ -1983,7 +2034,10 @@ class Calibrator(ctk.CTkToplevel):
         requests_made = 0
         started = time.monotonic()
         last_request_at = 0.0
-        min_request_interval = 8.0
+        active_provider = provider
+        active_model = model
+        active_api_key = api_key
+        min_request_interval = 1.0 if provider == LOCAL_PROVIDER else 8.0
         max_requests = 18
         deadline = started + 12 * 60
         try:
@@ -1994,7 +2048,7 @@ class Calibrator(ctk.CTkToplevel):
                     error = "The 12-minute calibration session limit was reached. Review the suggestions collected so far, then start again if needed."
                     break
                 if requests_made >= max_requests:
-                    error = f"The session used its limit of 18 {provider} analyses. Review the suggestions collected so far; nothing was saved automatically."
+                    error = f"The session used its limit of 18 {active_provider} analyses. Review the suggestions collected so far; nothing was saved automatically."
                     break
                 win, found = find_game_window(self.cfg.window_title, screen)
                 if not found:
@@ -2011,10 +2065,41 @@ class Calibrator(ctk.CTkToplevel):
                 if due and (changed or force):
                     self._ai_force_event.clear()
                     self._ai_dispatch_message(
-                        f"Capturing and analyzing screenshot {requests_made + 1}/{max_requests} with {provider}…\n\n"
+                        f"Capturing and analyzing screenshot {requests_made + 1}/{max_requests} with {active_provider}…\n\n"
                         "Keep Roblox visible and avoid dragging or resizing the game while the request runs."
                     )
-                    result = analyze_screenshot(masked, api_key, ASSETS, timeout=35.0, provider=provider, model=model)
+                    try:
+                        result = analyze_screenshot(
+                            masked, active_api_key, ASSETS,
+                            timeout=75.0 if active_provider == LOCAL_PROVIDER else 35.0,
+                            provider=active_provider, model=active_model,
+                        )
+                    except GeminiCalibrationError as provider_error:
+                        if active_provider == LOCAL_PROVIDER or not is_quota_or_credit_error(provider_error):
+                            raise
+                        self._ai_dispatch_message(
+                            f"{active_provider} quota/credits are exhausted. Trying the local vision LLM…\n\n"
+                            "Local inference uses no API credits. It needs Ollama and the qwen2.5vl:3b model."
+                        )
+                        try:
+                            result = analyze_screenshot(
+                                masked, "", ASSETS, timeout=75.0,
+                                provider=LOCAL_PROVIDER, model=LOCAL_MODEL,
+                            )
+                        except GeminiCalibrationError as local_error:
+                            raise GeminiCalibrationError(
+                                f"{provider_error}\n\nAutomatic local fallback could not start: {local_error}\n\n"
+                                f"To enable it, install Ollama from {LOCAL_DOWNLOAD_URL}, then run "
+                                f"ollama pull {LOCAL_MODEL} (model download is about 3.2 GB)."
+                            ) from local_error
+                        active_provider = LOCAL_PROVIDER
+                        active_model = LOCAL_MODEL
+                        active_api_key = ""
+                        min_request_interval = 1.0
+                        self._ai_provider = LOCAL_PROVIDER
+                        self._ai_dispatch_message(
+                            "Continuing with the local vision LLM. API credits will not be used for the remaining screenshots."
+                        )
                     requests_made += 1
                     last_request_at = time.monotonic()
                     last_analyzed = masked.copy()
@@ -2048,7 +2133,7 @@ class Calibrator(ctk.CTkToplevel):
                     wait = max(1, int(min_request_interval - (now - last_request_at)))
                     self._ai_dispatch_message(
                         f"Capture is queued. Keep the requested Roblox screen visible; "
-                        f"the next {provider} request can run in about {wait} seconds.\n\n"
+                        f"the next {active_provider} request can run in about {wait} seconds.\n\n"
                         f"Accepted controls so far: {len(proposals)}. Nothing is saved yet."
                     )
                 time.sleep(0.65)
@@ -2123,7 +2208,7 @@ class Calibrator(ctk.CTkToplevel):
             # Gemini saw that control. No check-list item is marked reviewed.
             self.select(first_key)
             self._set_interaction(
-                "Gemini suggestions are overlaid for review. Select each affected control, check the reference and position, then click Save calibration. No config file was written.",
+                "AI suggestions are overlaid for review. Select each affected control, check the reference and position, then click Save calibration. No config file was written.",
                 SUCCESS,
             )
             result_line = f"Finished: {len(proposals)} unique control(s) suggested."
