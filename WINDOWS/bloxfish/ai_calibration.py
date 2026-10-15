@@ -25,7 +25,7 @@ LOCAL_MODEL = "qwen2.5vl:3b"
 LOCAL_ENDPOINT = "http://127.0.0.1:11434/v1/chat/completions"
 LOCAL_DOWNLOAD_URL = "https://ollama.com/download"
 LOCAL_MODEL_URL = "https://ollama.com/library/qwen2.5vl"
-MIN_CONFIDENCE = 0.78
+MIN_CONFIDENCE = 0.88
 
 # Every configured service below accepts image input at its documented endpoint.
 # Users can override the model in the dialog; keys remain isolated per provider.

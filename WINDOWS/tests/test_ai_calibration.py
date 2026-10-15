@@ -74,6 +74,20 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
         self.assertEqual(result["proposals"][0]["key"], "bar_search")
         self.assertEqual(result["proposals"][0]["coords"], [0.04, 0.39, 0.96, 0.95])
 
+    def test_strict_confidence_gate_rejects_uncertain_targets(self):
+        base = {
+            "screen_state": "interact_prompt",
+            "summary": "Prompt visible",
+            "next_instruction": "Review the visible prompt",
+            "regions": [{
+                "key": "center", "kind": "dot", "coords": [500, 500],
+                "confidence": 0.87, "evidence": "Mostly clear",
+            }],
+        }
+        self.assertEqual(validate_response(base)["proposals"], [])
+        base["regions"][0]["confidence"] = 0.90
+        self.assertEqual(len(validate_response(base)["proposals"]), 1)
+
     def test_rejects_low_confidence_wrong_state_and_wrong_kind(self):
         result = validate_response({
             "screen_state": "reel_minigame",
