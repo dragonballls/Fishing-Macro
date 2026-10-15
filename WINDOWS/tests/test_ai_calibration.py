@@ -413,11 +413,14 @@ class LocalVideoRecorderTests(unittest.TestCase):
             path = recorder.start(frame)
             recorder.write(frame)
             finalized = recorder.close()
+            file_exists_before_cleanup = Path(path).is_file()
+            path_parent = Path(path).parent
+            path_suffix = Path(path).suffix
 
         self.assertEqual(finalized, path)
-        self.assertTrue(Path(path).is_file())
-        self.assertEqual(Path(path).parent, Path(tmp))
-        self.assertEqual(Path(path).suffix, ".mp4")
+        self.assertTrue(file_exists_before_cleanup)
+        self.assertEqual(path_parent, Path(tmp))
+        self.assertEqual(path_suffix, ".mp4")
         self.assertEqual(created["fps"], 5.0)
         self.assertEqual(created["size"], (160, 90))
         self.assertGreaterEqual(created["writer"].write_count, 2)
