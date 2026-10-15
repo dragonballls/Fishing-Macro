@@ -98,10 +98,37 @@ jobs:
           Stop-Process -Id $process.Id -Force
           Write-Host "PASS: executable stayed running through GUI startup."
 
-      - name: Upload Windows executable
+      - name: Upload Windows executable as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: FishingMacro-Windows-x64
           path: dist/FishingMacro.exe
           if-no-files-found: error
           retention-days: 30
+
+  publish-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the executable built and smoke-tested in this run
+        uses: actions/download-artifact@v4
+        with:
+          name: FishingMacro-Windows-x64
+          path: dist
+
+      - name: Publish a public, direct-download GitHub release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: fishingmacro-${{ github.sha }}
+          name: Fishing Macro Windows build (${{ github.sha }})
+          body: |
+            Automated Windows x64 build from commit ${{ github.sha }}.
+            This release is published only after source tests, PyInstaller packaging, and GUI startup smoke test pass.
+          prerelease: true
+          draft: false
+          make_latest: false
+          overwrite_files: true
+          files: dist/FishingMacro.exe

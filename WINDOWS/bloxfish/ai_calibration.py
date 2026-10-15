@@ -1,8 +1,8 @@
-"""Gemini-assisted, review-before-save calibration for Fishing-Macro.
+"""Vision-LLM-assisted, review-before-save calibration for Fishing-Macro.
 
-Only the Roblox client window and bundled calibration references are sent to
-Gemini. Captures are processed in memory; API keys use the OS credential store
-and are never written to config.json or logged.
+Cloud providers receive the Roblox client window and bundled calibration
+references. The optional Ollama provider processes images on loopback. Captures
+stay in memory; cloud API keys use the OS credential store.
 """
 from __future__ import annotations
 from copy import deepcopy
@@ -20,7 +20,12 @@ MODEL_NAME = "gemini-3.8-flash"
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL_NAME + ":generateContent"
 KEY_SERVICE = "FishingMacro.GeminiAutoCalibration"
 KEY_USER = "gemini-api-key"
-MIN_CONFIDENCE = 0.78
+LOCAL_PROVIDER = "Local LLM (Ollama)"
+LOCAL_MODEL = "qwen2.5vl:3b"
+LOCAL_ENDPOINT = "http://127.0.0.1:11434/v1/chat/completions"
+LOCAL_DOWNLOAD_URL = "https://ollama.com/download"
+LOCAL_MODEL_URL = "https://ollama.com/library/qwen2.5vl"
+MIN_CONFIDENCE = 0.88
 
 # Every configured service below accepts image input at its documented endpoint.
 # Users can override the model in the dialog; keys remain isolated per provider.
@@ -33,7 +38,8 @@ PROVIDER_CONFIGS = {
     "OpenRouter": {
         "kind": "openai",
         "endpoint": "https://openrouter.ai/api/v1/chat/completions",
-        "model": "google/gemini-3.8-flash",
+        # The free router selects an available model compatible with vision input.
+        "model": "openrouter/free",
     },
     "Groq": {
         "kind": "openai",
@@ -49,6 +55,12 @@ PROVIDER_CONFIGS = {
         "kind": "openai",
         "endpoint": "https://api.mistral.ai/v1/chat/completions",
         "model": "ministral-14b-2512",
+    },
+    LOCAL_PROVIDER: {
+        "kind": "openai",
+        "endpoint": LOCAL_ENDPOINT,
+        "model": LOCAL_MODEL,
+        "local": True,
     },
 }
 PROVIDERS = tuple(PROVIDER_CONFIGS)
@@ -127,6 +139,15 @@ class GeminiCalibrationError(RuntimeError):
     """Safe, user-displayable calibration/API failure."""
 
 
+def is_quota_or_credit_error(error: BaseException) -> bool:
+    """Whether a provider failure should trigger the no-credit local fallback."""
+    message = str(error).casefold().replace("-", "_")
+    return any(marker in message for marker in (
+        "quota", "rate limit", "rate_limit", "insufficient credit",
+        "out of credits", "billing limit", "resource_exhausted",
+    ))
+
+
 def _provider_key_location(provider: str = "Gemini") -> tuple[str, str]:
     """Return a provider-specific credential-store identity."""
     if provider not in PROVIDER_CONFIGS:
@@ -140,6 +161,8 @@ def _provider_key_location(provider: str = "Gemini") -> tuple[str, str]:
 
 def get_saved_api_key(provider: str = "Gemini") -> str | None:
     """Load a provider-specific API key from the OS credential store."""
+    if provider == LOCAL_PROVIDER:
+        return None
     service, username = _provider_key_location(provider)
     try:
         import keyring
@@ -154,6 +177,8 @@ def get_saved_api_key(provider: str = "Gemini") -> str | None:
 
 def save_api_key(api_key: str, provider: str = "Gemini") -> None:
     """Store the selected provider's non-empty key in the OS credential store."""
+    if provider == LOCAL_PROVIDER:
+        raise GeminiCalibrationError("The local Ollama provider does not use an API key.")
     api_key = api_key.strip()
     if not api_key or len(api_key) > 512 or any(ch.isspace() for ch in api_key):
         raise GeminiCalibrationError(f"Enter a valid {provider} API key.")
@@ -175,6 +200,8 @@ def save_api_key(api_key: str, provider: str = "Gemini") -> None:
 
 
 def delete_saved_api_key(provider: str = "Gemini") -> None:
+    if provider == LOCAL_PROVIDER:
+        return
     service, username = _provider_key_location(provider)
     try:
         import keyring
@@ -364,14 +391,15 @@ def analyze_screenshot(
 ) -> dict[str, Any]:
     """Analyze one live game-window frame using a selected vision API."""
     api_key = (api_key or "").strip()
-    if not api_key:
+    if provider != LOCAL_PROVIDER and not api_key:
         raise GeminiCalibrationError(f"No {provider} API key was provided.")
     config = PROVIDER_CONFIGS.get(provider)
     if config is None:
         raise GeminiCalibrationError("Choose a supported AI provider.")
     model = (model or "").strip() or config["model"]
+    allowed_model_chars = "._/-" + (":" if provider == LOCAL_PROVIDER else "")
     if (len(model) > 120 or not model
-            or not all(ch.isalnum() or ch in "._/-" for ch in model)
+            or not all(ch.isalnum() or ch in allowed_model_chars for ch in model)
             or ".." in model or model.startswith("/") or model.endswith("/")):
         raise GeminiCalibrationError("The model name contains unsupported characters.")
 
@@ -457,10 +485,9 @@ All suggested changes are reviewed in the app before saving.
                 "max_tokens": 2200,
                 "temperature": 0,
             }
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": "Bearer " + api_key,
-            }
+            headers = {"Content-Type": "application/json"}
+            if provider != LOCAL_PROVIDER:
+                headers["Authorization"] = "Bearer " + api_key
             if provider == "OpenRouter":
                 headers["HTTP-Referer"] = "https://github.com/dragonballls/Fishing-Macro"
                 headers["X-Title"] = "Fishing Macro"
@@ -474,6 +501,16 @@ All suggested changes are reviewed in the app before saving.
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        if provider == LOCAL_PROVIDER and exc.code == 404:
+            raise GeminiCalibrationError(
+                f"Ollama could not find the local vision model '{model}'. "
+                f"Install it from {LOCAL_MODEL_URL}, then run: ollama pull {model}"
+            ) from exc
+        if provider == LOCAL_PROVIDER and exc.code in (400, 500):
+            raise GeminiCalibrationError(
+                f"Ollama rejected the local vision request. Confirm '{model}' is installed "
+                "and supports image input; if needed, run its ollama pull command again."
+            ) from exc
         if exc.code in (401, 403):
             raise GeminiCalibrationError(
                 f"{provider} rejected the API key or account permission. Check the key and provider dashboard."
@@ -492,10 +529,20 @@ All suggested changes are reviewed in the app before saving.
             ) from exc
         raise GeminiCalibrationError(f"{provider} API returned HTTP {exc.code}.") from exc
     except urllib.error.URLError as exc:
+        if provider == LOCAL_PROVIDER:
+            raise GeminiCalibrationError(
+                "Could not connect to Ollama at 127.0.0.1:11434. Install/start Ollama, "
+                f"then run: ollama pull {model}. The model is downloaded separately and "
+                "local inference can use substantial RAM/VRAM."
+            ) from exc
         raise GeminiCalibrationError(
             f"Could not reach {provider}. Check your internet connection and selected model, then retry."
         ) from exc
     except TimeoutError as exc:
+        if provider == LOCAL_PROVIDER:
+            raise GeminiCalibrationError(
+                "The local vision model timed out. Retry when the PC is less busy or use a cloud provider."
+            ) from exc
         raise GeminiCalibrationError(f"{provider} timed out; retry the current calibration step.") from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise GeminiCalibrationError(f"{provider} returned an unreadable response; retry the step.") from exc
