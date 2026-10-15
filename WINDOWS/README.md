@@ -142,12 +142,14 @@ existing calibration stays unchanged when an API request fails. The selected
 provider's key and the OpenRouter fallback key remain separate.
 
 The app refuses to upload a full-monitor fallback if it cannot identify the
-Roblox client, masks its own notification area before image analysis, filters suggestions below the 68% review floor, rejects invalid coordinates, and ignores proposals that overlap the
-masked area. Screenshots are not written to disk by this feature. Cloud
-providers receive the game-window screenshot and bundled calibration reference
-sheet, so review the selected provider's data handling, usage limits and billing
-rules. Only the selected cloud provider receives these images. Keep cloud API
-keys private.
+Roblox client, masks its own notification area before AI analysis, filters
+suggestions below the 68% review floor, rejects invalid coordinates, and ignores
+proposals that overlap the masked area. Individual still-image payloads are not
+saved as files; the optional local video is the only recording written to disk.
+Normally the selected cloud provider receives the still and bundled calibration
+reference sheet. If a quota/credit error triggers the configured fallback, that
+still is retried through OpenRouter's `openrouter/free` route instead. Review
+the relevant provider's data handling and usage limits, and keep API keys private.
 
 AI-suggested boxes and click points are only placed on the calibration canvas
 for review. **Nothing is written to `config.json` automatically.** Select each
