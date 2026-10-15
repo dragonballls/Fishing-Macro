@@ -92,6 +92,7 @@ from bloxfish.ai_calibration import (  # noqa: E402
     LOCAL_PROVIDER, PROVIDERS, PROVIDER_CONFIGS, analyze_screenshot,
     capture_config_values, get_saved_api_key, is_quota_or_credit_error,
     restore_config_values, save_api_key, screen_changed,
+    should_replace_proposal,
 )
 from bloxfish.engine import FishingEngine          # noqa: E402
 from bloxfish import vision                        # noqa: E402
@@ -1022,6 +1023,10 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_request_count = 0
         self._ai_pending = {}
         self._ai_evidence = {}
+        self._ai_applied: set[str] = set()
+        self._ai_retake_key: str | None = None
+        self._ai_apply_button = None
+        self._ai_retake_button = None
         self._ai_default_shot = None
         self._ai_default_win = None
         # Proposed AI coordinates are preview-only until Save succeeds. Keep the
@@ -1293,6 +1298,31 @@ class Calibrator(ctk.CTkToplevel):
                                         font=ctk.CTkFont(size=11))
         self.guide_extra.grid(row=8, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 12))
         self.guide_extra.grid_remove()
+
+        # AI suggestions are separate from the current calibration shape. The
+        # existing indicator is never moved unless the user explicitly applies
+        # a candidate here, and the disk is only changed by Save calibration.
+        self.ai_candidate_frame = ctk.CTkFrame(det, fg_color=BG_CARD_RAISED, corner_radius=10)
+        self.ai_candidate_frame.grid(row=10, column=0, columnspan=2, sticky="ew",
+                                     padx=16, pady=(0, 12))
+        self.ai_candidate_frame.grid_columnconfigure(0, weight=1)
+        self.ai_candidate_note = ctk.CTkLabel(
+            self.ai_candidate_frame,
+            text="AI candidates appear here; your current placement stays unchanged until you choose one.",
+            anchor="w", justify="left", wraplength=700, text_color="#fbbf24",
+            font=ctk.CTkFont(size=11))
+        self.ai_candidate_note.grid(row=0, column=0, columnspan=2, sticky="ew",
+                                    padx=12, pady=(9, 5))
+        self._ai_apply_button = ctk.CTkButton(
+            self.ai_candidate_frame, text="Use AI candidate for selected", height=30,
+            fg_color="#17466b", hover_color="#23628f", text_color=TEXT,
+            state="disabled", command=self._ai_apply_selected)
+        self._ai_apply_button.grid(row=1, column=0, sticky="ew", padx=(10, 5), pady=(0, 9))
+        self._ai_retake_button = ctk.CTkButton(
+            self.ai_candidate_frame, text="Retake selected AI image", height=30,
+            fg_color=BG_CARD, hover_color="#203858", text_color=TEXT,
+            state="disabled", command=self._ai_retake_selected)
+        self._ai_retake_button.grid(row=1, column=1, sticky="ew", padx=(5, 10), pady=(0, 9))
 
         # Color-capture controls: shown only while an Advanced-color item is
         # picked. Grid-removed by default so the normal box/dot flow is unchanged.
@@ -1614,7 +1644,8 @@ class Calibrator(ctk.CTkToplevel):
             return
 
         providers = list(PROVIDERS)
-        provider_var = tk.StringVar(value="OpenRouter")
+        provider_var = tk.StringVar(
+            value=self._ai_provider if self._ai_provider in PROVIDERS else "OpenRouter")
         key_holder = {"key": None}
         key_urls = {
             "Gemini": "https://aistudio.google.com/apikey",
@@ -1702,7 +1733,11 @@ class Calibrator(ctk.CTkToplevel):
         actions = ctk.CTkFrame(shell, fg_color="transparent")
         actions.pack(fill="x", padx=18, pady=(8, 14))
 
+        dialog_started = {"value": False}
+
         def close_dialog() -> None:
+            if not dialog_started["value"]:
+                self._ai_retake_key = None
             try:
                 dialog.grab_release()
             except Exception:  # noqa: BLE001
@@ -1775,6 +1810,7 @@ class Calibrator(ctk.CTkToplevel):
             if not model:
                 error_label.configure(text="Enter a model ID that supports image input.")
                 return
+            dialog_started["value"] = True
             close_dialog()
             self._ai_begin(key or "", provider, model)
 
@@ -1864,18 +1900,11 @@ class Calibrator(ctk.CTkToplevel):
         )
         self._ai_stop_button.pack(side="right")
         toast.update_idletasks()
-        width, height = 420, 292
-        # Anchor to the actual Roblox client captured by Re-shoot when available.
-        # Keep an 88 px right inset (rather than 16 px) to avoid clipping at the
-        # display edge, and respect the game's monitor/position on multi-monitor PCs.
-        game_rect = getattr(self, "_ai_default_win", None) or getattr(self, "win", None)
-        if game_rect is not None and getattr(game_rect, "width", 0) > 0:
-            x = int(game_rect.left + game_rect.width - width - 88)
-            x = max(int(game_rect.left + 8), x)
-            y = int(game_rect.top + 18)
-        else:
-            x = max(24, toast.winfo_screenwidth() - width - 88)
-            y = 18
+        # Pin the notice to the actual top-right screen corner with a small
+        # inset: the previous 88 px gap made it look stranded far from the edge.
+        screen_width = max(280, int(toast.winfo_screenwidth()))
+        width, height = min(420, screen_width - 24), 292
+        x, y = max(12, screen_width - width - 12), 12
         toast.geometry(f"{width}x{height}+{x}+{y}")
         toast.update_idletasks()
         self._ai_toast = toast
@@ -1952,13 +1981,15 @@ class Calibrator(ctk.CTkToplevel):
         if self._ai_committed:
             self._ai_base_values = {}
             self._ai_committed = False
+        retake_key = self._ai_retake_key
+        self._ai_retake_key = None
         self._ai_provider = provider
         self._ai_stop_event = threading.Event()
         self._ai_force_event = threading.Event()
         self._ai_running = True
         self._ai_request_count = 0
-        self._ai_pending = {}
-        self._ai_evidence = {}
+        # Keep previous candidates/evidence across sessions so a user can
+        # recapture an old target and compare it instead of losing earlier work.
         self._ai_last_shot = None
         self._ai_last_win = None
         self._ai_make_toast()
@@ -1977,7 +2008,7 @@ class Calibrator(ctk.CTkToplevel):
         except Exception:  # noqa: BLE001
             pass
         self._ai_thread = threading.Thread(
-            target=self._ai_worker, args=(api_key, provider, model),
+            target=self._ai_worker, args=(api_key, provider, model, retake_key),
             name="FishingMacro-AICalibration", daemon=True,
         )
         self._ai_thread.start()
@@ -2018,14 +2049,16 @@ class Calibrator(ctk.CTkToplevel):
             return left < x1 and right > x0 and top < y1 and bottom > y0
         return True
 
-    def _ai_worker(self, api_key: str, provider: str, model: str) -> None:
+    def _ai_worker(self, api_key: str, provider: str, model: str,
+                   retake_key: str | None = None) -> None:
         """Capture only a confirmed game window; throttle API calls and stop cleanly."""
         from bloxfish.capture import Screen, find_game_window
         from PIL import Image as PILImage
 
         screen = None
-        proposals = {}
-        evidence = {}
+        proposals = dict(getattr(self, "_ai_pending", {}))
+        evidence = dict(getattr(self, "_ai_evidence", {}))
+        updated_keys: set[str] = set()
         last_analyzed = None
         last_frame = None
         last_win = None
@@ -2108,7 +2141,10 @@ class Calibrator(ctk.CTkToplevel):
                             continue
                         key = proposal["key"]
                         previous = proposals.get(key)
-                        if previous is None or proposal["confidence"] > previous["confidence"]:
+                        explicit_retake = retake_key == key
+                        if should_replace_proposal(
+                            previous, proposal, force_retake=explicit_retake
+                        ):
                             proposals[key] = proposal
                             evidence[key] = {
                                 "shot": PILImage.fromarray(masked[:, :, ::-1].copy()),
@@ -2118,6 +2154,9 @@ class Calibrator(ctk.CTkToplevel):
                                 "confidence": proposal["confidence"],
                                 "evidence": proposal["evidence"],
                             }
+                            updated_keys.add(key)
+                            if explicit_retake:
+                                retake_key = None
                         accepted_now += 1
                     summary = result["summary"][:125]
                     instruction = result["next_instruction"][:200]
@@ -2148,14 +2187,16 @@ class Calibrator(ctk.CTkToplevel):
             self._ai_evidence = dict(evidence)
             try:
                 self.after(0, lambda: self._ai_finish(
-                    proposals, evidence, last_frame, last_win, error, requests_made
+                    proposals, evidence, last_frame, last_win, error, requests_made,
+                    updated_keys
                 ))
             except Exception:  # noqa: BLE001
                 pass
 
     def _ai_finish(self, proposals, evidence, last_frame, last_win,
-                   error: str | None, request_count: int) -> None:
-        """Apply proposals to the review canvas only; do not write config.json."""
+                   error: str | None, request_count: int,
+                   updated_keys: set[str] | None = None) -> None:
+        """Show separate AI candidates without changing the current calibration."""
         # Restore the workspace only after capture stops, before touching its
         # canvas. The notice stays topmost with the final summary until closed.
         try:
@@ -2169,26 +2210,10 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_evidence = dict(evidence)
         self._ai_last_shot = last_frame
         self._ai_last_win = last_win
-
-        for key, proposal in proposals.items():
-            spec = _group_of(key)[3]
-            if not spec:
-                continue
-            kind, holder, fields = spec[1], spec[2], spec[3]
-            target = getattr(self.cfg, holder)
-            coords = proposal["coords"]
-            if kind == "box" and len(fields) == 4 and len(coords) == 4:
-                paths = [f"{holder}.{field}" for field in fields]
-                self._ai_base_values = capture_config_values(
-                    self.cfg, paths, self._ai_base_values
-                )
-                for field, value in zip(fields, coords):
-                    setattr(target, field, float(value))
-            elif kind == "dot" and len(fields) == 1 and len(coords) == 2:
-                self._ai_base_values = capture_config_values(
-                    self.cfg, [f"{holder}.{fields[0]}"], self._ai_base_values
-                )
-                setattr(target, fields[0], (float(coords[0]), float(coords[1])))
+        # A fresher candidate requires a fresh user decision; previously
+        # accepted coordinates remain in the preview until changed by hand.
+        for key in (updated_keys or set()):
+            self._ai_applied.discard(key)
 
         # Keep the optional tight zone detector off unless the user already
         # enabled it; auto-calibrating a box must never silently change behavior.
@@ -2202,10 +2227,10 @@ class Calibrator(ctk.CTkToplevel):
                 pass
 
         if proposals:
-            first_key = next(iter(proposals))
-            # Selecting an item switches the review image to the state where
-            # Gemini saw that control. No check-list item is marked reviewed.
-            self.select(first_key)
+            # Keep the current selection (especially after retakes) so the user
+            # compares new evidence with the unchanged working placement.
+            selected_key = self.sel if self.sel in proposals else next(iter(proposals))
+            self.select(selected_key)
             self._set_interaction(
                 "AI suggestions are overlaid for review. Select each affected control, check the reference and position, then click Save calibration. No config file was written.",
                 SUCCESS,
@@ -2225,7 +2250,12 @@ class Calibrator(ctk.CTkToplevel):
             result_line = "No candidates passed the 68% review floor plus visibility and geometry checks. Existing calibration was left unchanged."
         if error:
             result_line += "\n" + error
-        result_line += f"\n{self._ai_provider} analyses used: {request_count}. Review suggestions and press Save calibration to keep them."
+        result_line += (
+            f"\n{self._ai_provider} analyses used: {request_count}. "
+            "Select a control to compare its dashed amber AI candidate with the current placement. "
+            "Use AI candidate only when you choose it; Save calibration commits the chosen edits."
+        )
+        self._update_ai_candidate_controls()
         self._ai_toast_message(result_line)
         capture_button = getattr(self, "_ai_capture_button", None)
         stop_button = getattr(self, "_ai_stop_button", None)
@@ -2485,8 +2515,44 @@ class Calibrator(ctk.CTkToplevel):
                     self.shapes[key] = {"kind": "dot", "id": oid, "label": tid,
                                         "tick": tick, "r": r, "entry": entry}
 
+        self._draw_ai_candidate_overlay()
         if self.pick == "fish_tpl":
             self._draw_template_overlay()
+
+    def _draw_ai_candidate_overlay(self) -> None:
+        """Draw a provisional AI candidate without moving the active indicator."""
+        key = self.sel
+        if not key or key in self._ai_applied or key not in self._ai_pending:
+            return
+        if self.win is None or self.scale <= 0:
+            return
+        proposal = self._ai_pending[key]
+        _title, _icon, _color, spec = _group_of(key)
+        if not spec:
+            return
+        coords = proposal.get("coords", ())
+        if proposal.get("kind") == "box" and len(coords) == 4:
+            x0, y0, x1, y1 = self._box_px(*coords)
+            self.canvas.create_rectangle(
+                x0, y0, x1, y1, outline="#f59e0b", width=2, dash=(6, 3))
+            self.canvas.create_text(
+                x0 + 4, max(10, y0 - 8),
+                text=f"AI candidate {proposal.get('confidence', 0):.0%} · not applied",
+                fill="#f59e0b", anchor="sw", font=("Segoe UI", 9, "bold"))
+        elif proposal.get("kind") == "dot" and len(coords) == 2:
+            x, y = self._dot_px(*coords)
+            r = self.DOT_R + 5
+            self.canvas.create_oval(
+                x - r, y - r, x + r, y + r,
+                outline="#f59e0b", width=2, dash=(5, 3))
+            self.canvas.create_line(x - r - 5, y, x + r + 5, y,
+                                   fill="#f59e0b", width=2)
+            self.canvas.create_line(x, y - r - 5, x, y + r + 5,
+                                   fill="#f59e0b", width=2)
+            self.canvas.create_text(
+                x + r + 5, y,
+                text=f"AI {proposal.get('confidence', 0):.0%} · not applied",
+                fill="#f59e0b", anchor="w", font=("Segoe UI", 9, "bold"))
 
     def _draw_template_overlay(self) -> None:
         """Magenta = the crop box you're capturing; green = where the saved
@@ -2585,6 +2651,81 @@ class Calibrator(ctk.CTkToplevel):
             self._fit()
         else:
             self.redraw()
+        self._update_ai_candidate_controls()
+
+    def _update_ai_candidate_controls(self) -> None:
+        key = self.sel
+        has_candidate = bool(key and key in self._ai_pending)
+        applied = bool(key and key in self._ai_applied)
+        try:
+            self._ai_apply_button.configure(
+                state="normal" if has_candidate and not applied else "disabled",
+                text="AI candidate already applied" if applied
+                else "Use AI candidate for selected")
+            self._ai_retake_button.configure(
+                state="normal" if has_candidate and not self._ai_running else "disabled")
+            if has_candidate:
+                proposal = self._ai_pending[key]
+                self.ai_candidate_note.configure(
+                    text=(f"Amber dashed outline = new AI candidate for {key} "
+                          f"({proposal.get('confidence', 0):.0%} model-reported confidence). "
+                          "Existing placement stays unchanged until you apply it. "
+                          "Retake can replace this candidate; it never changes the saved placement by itself."),
+                    text_color="#fbbf24")
+            else:
+                self.ai_candidate_note.configure(
+                    text="No AI candidate for this control yet. Run AI Auto-Calibrate; existing placement is preserved.",
+                    text_color=MUTED)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _ai_apply_selected(self) -> None:
+        key = self.sel
+        proposal = self._ai_pending.get(key) if key else None
+        if not key or not proposal:
+            self._set_interaction("Choose a control with an AI candidate first.", WARNING)
+            return
+        if self._ai_running:
+            self._set_interaction("Wait for the active analysis to finish before applying a candidate.", WARNING)
+            return
+        spec = _group_of(key)[3]
+        if not spec:
+            self._set_interaction("This control cannot use an AI candidate.", WARNING)
+            return
+        kind, holder, fields = spec[1], spec[2], spec[3]
+        coords = proposal.get("coords", ())
+        target = getattr(self.cfg, holder)
+        if kind == "box" and len(fields) == 4 and len(coords) == 4:
+            self._ai_base_values = capture_config_values(
+                self.cfg, [f"{holder}.{field}" for field in fields],
+                self._ai_base_values)
+            for field, value in zip(fields, coords):
+                setattr(target, field, float(value))
+        elif kind == "dot" and len(fields) == 1 and len(coords) == 2:
+            self._ai_base_values = capture_config_values(
+                self.cfg, [f"{holder}.{fields[0]}"], self._ai_base_values)
+            setattr(target, fields[0], tuple(float(v) for v in coords))
+        else:
+            self._set_interaction("The suggestion did not match this control's expected geometry.", WARNING)
+            return
+        self._ai_applied.add(key)
+        self.redraw()
+        self._update_coordinate_preview(key)
+        self._update_ai_candidate_controls()
+        self._set_interaction(
+            "AI candidate applied to the preview. Your previous saved calibration is untouched until you press Save calibration; closing without saving restores the prior values.",
+            SUCCESS)
+
+    def _ai_retake_selected(self) -> None:
+        key = self.sel
+        if not key or key not in self._ai_pending:
+            self._set_interaction("Select a control that has an AI candidate to retake.", WARNING)
+            return
+        if self._ai_running:
+            self._set_interaction("Wait for this AI session to finish before retaking a candidate.", WARNING)
+            return
+        self._ai_retake_key = key
+        self._ai_prompt_key()
 
     # -- Advanced: per-machine color capture ------------------------------
     def select_color(self, key: str) -> None:

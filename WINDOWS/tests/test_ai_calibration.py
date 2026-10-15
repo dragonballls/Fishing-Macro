@@ -19,6 +19,7 @@ from bloxfish.ai_calibration import (  # noqa: E402
     analyze_screenshot,
     is_quota_or_credit_error,
     screen_changed,
+    should_replace_proposal,
     validate_response,
 )
 
@@ -54,6 +55,23 @@ class ConfigPreviewRollbackTests(unittest.TestCase):
 
         restore_config_values(cfg, baseline)
         self.assertEqual(cfg.detection.bar_search_left, 0.13)
+
+
+class ProposalReplacementPolicyTests(unittest.TestCase):
+    def test_better_confidence_replaces_candidate_during_normal_capture(self):
+        self.assertTrue(should_replace_proposal(
+            {"confidence": 0.72}, {"confidence": 0.91}))
+        self.assertFalse(should_replace_proposal(
+            {"confidence": 0.91}, {"confidence": 0.72}))
+        self.assertFalse(should_replace_proposal(
+            {"confidence": 0.91}, {"confidence": 0.91}))
+
+    def test_explicit_retake_can_replace_candidate_even_if_confidence_is_lower(self):
+        self.assertTrue(should_replace_proposal(
+            {"confidence": 0.97}, {"confidence": 0.70}, force_retake=True))
+
+    def test_first_candidate_is_accepted(self):
+        self.assertTrue(should_replace_proposal(None, {"confidence": 0.70}))
 
 
 class GeminiCoordinateValidationTests(unittest.TestCase):

@@ -121,7 +121,13 @@ show next. The live monitor samples the actual Roblox client window and submits 
 **Capture current screen** to request an additional analysis. This is sequential,
 screen-guided calibration: hidden buttons cannot be safely located from a
 screenshot that does not show them, so the app asks you to open the matching
-fishing, reel, or NPC UI. If a cloud provider returns a quota/credit error, the
+fishing, reel, or NPC UI. AI candidates appear as separate amber dashed overlays:
+existing indicator positions remain unchanged unless you explicitly choose
+**Use AI candidate for selected**. The saved config changes only when you press
+**Save calibration**. To recapture evidence for a candidate, select it and press
+**Retake selected AI image**; a deliberate retake can replace that candidate while
+leaving its working saved placement alone. The live guide sits in the screen's
+top-right corner with a small inset. If a cloud provider returns a quota/credit error, the
 app automatically tries the local vision model for this and subsequent steps.
 The local fallback needs Ollama plus qwen2.5vl:3b; install Ollama from
 https://ollama.com/download, then run "ollama pull qwen2.5vl:3b" once. The

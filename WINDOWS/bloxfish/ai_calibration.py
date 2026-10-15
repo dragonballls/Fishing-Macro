@@ -238,6 +238,23 @@ def screen_changed(first_bgr, second_bgr) -> bool:
     return (mean_diff >= 7.0 and changed_fraction >= 0.02) or changed_fraction >= 0.09
 
 
+def should_replace_proposal(
+    existing: Mapping[str, Any] | None,
+    candidate: Mapping[str, Any],
+    *,
+    force_retake: bool = False,
+) -> bool:
+    """Keep the best candidate by default; explicit retakes can replace it."""
+    if force_retake or existing is None:
+        return True
+    try:
+        return float(candidate.get("confidence", 0.0)) > float(
+            existing.get("confidence", 0.0)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _image_bytes(frame_bgr, max_edge: int = 1600) -> bytes:
     try:
         from PIL import Image
