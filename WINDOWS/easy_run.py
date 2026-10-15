@@ -88,10 +88,10 @@ except ImportError:                                # noqa: BLE001
 
 from bloxfish.config import Config, COOLDOWNS, VERSION  # noqa: E402
 from bloxfish.ai_calibration import (  # noqa: E402
-    GeminiCalibrationError, LOCAL_MODEL, LOCAL_PROVIDER, PROVIDERS, PROVIDER_CONFIGS,
-    analyze_screenshot, capture_config_values, discover_local_vision_models,
-    get_saved_api_key, is_quota_or_credit_error, restore_config_values,
-    save_api_key, screen_changed,
+    GeminiCalibrationError, LOCAL_DOWNLOAD_URL, LOCAL_MODEL, LOCAL_MODEL_URL,
+    LOCAL_PROVIDER, PROVIDERS, PROVIDER_CONFIGS, analyze_screenshot,
+    capture_config_values, get_saved_api_key, is_quota_or_credit_error,
+    restore_config_values, save_api_key, screen_changed,
 )
 from bloxfish.engine import FishingEngine          # noqa: E402
 from bloxfish import vision                        # noqa: E402
@@ -1614,7 +1614,7 @@ class Calibrator(ctk.CTkToplevel):
             return
 
         providers = list(PROVIDERS)
-        provider_var = tk.StringVar(value=LOCAL_PROVIDER)
+        provider_var = tk.StringVar(value="OpenRouter")
         key_holder = {"key": None}
         key_urls = {
             "Gemini": "https://aistudio.google.com/apikey",
@@ -1676,7 +1676,7 @@ class Calibrator(ctk.CTkToplevel):
         ctk.CTkLabel(shell, text="MODEL ID (editable)", text_color=ACCENT,
                      anchor="w", font=ctk.CTkFont(size=10, weight="bold")).pack(
                          fill="x", padx=18, pady=(0, 3))
-        model_entry = ctk.CTkEntry(shell, height=36, placeholder_text="Auto-detect an installed vision model")
+        model_entry = ctk.CTkEntry(shell, height=36)
         model_entry.insert(0, PROVIDER_CONFIGS[provider_var.get()]["model"])
         model_entry.pack(fill="x", padx=18, pady=(0, 9))
 
@@ -1702,58 +1702,12 @@ class Calibrator(ctk.CTkToplevel):
         actions = ctk.CTkFrame(shell, fg_color="transparent")
         actions.pack(fill="x", padx=18, pady=(8, 14))
 
-        local_model_holder: dict[str, object] = {"models": [], "endpoint": None}
-
         def close_dialog() -> None:
             try:
                 dialog.grab_release()
             except Exception:  # noqa: BLE001
                 pass
             dialog.destroy()
-
-        def scan_local_models() -> bool:
-            """Use only already-running local servers and models; never install or download."""
-            error_label.configure(text="")
-            saved_note.configure(text="Scanning existing local vision servers only…", text_color=WARNING)
-            dialog.update_idletasks()
-            try:
-                options = discover_local_vision_models(timeout=0.35)
-            except Exception as exc:  # noqa: BLE001
-                options = []
-                error_label.configure(text=f"Local model scan failed safely ({type(exc).__name__}).")
-            local_model_holder["models"] = options
-            if not options:
-                local_model_holder["endpoint"] = None
-                model_entry.delete(0, "end")
-                saved_note.configure(
-                    text=("No installed vision model was found on active local OpenAI-compatible servers "
-                          "(LM Studio, llama.cpp/LocalAI, vLLM, or Text Generation WebUI). "
-                          "Nothing was installed or downloaded. Start a local server with a vision model "
-                          "that is already on this PC, then scan again."),
-                    text_color=WARNING,
-                )
-                saved_button.configure(text="No local model found", state="disabled")
-                save_button.configure(text="Scan local models", command=scan_local_models, state="normal")
-                get_button.configure(text="Scan again", command=scan_local_models, state="normal")
-                return False
-
-            typed = model_entry.get().strip()
-            chosen = next((item for item in options if item["model"] == typed), options[0])
-            model_entry.delete(0, "end")
-            model_entry.insert(0, chosen["model"])
-            local_model_holder["endpoint"] = chosen["endpoint"]
-            names = ", ".join(f'{item["model"]} ({item["server"]})' for item in options[:3])
-            if len(options) > 3:
-                names += f", and {len(options) - 3} more"
-            saved_note.configure(
-                text=(f"Found {len(options)} existing local vision model(s). Selected {chosen['model']} "
-                      f"via {chosen['server']}. Detected: {names}. No runtime or model downloads are used."),
-                text_color=SUCCESS,
-            )
-            saved_button.configure(text="Start selected local model", state="normal")
-            save_button.configure(text="Scan local models", command=scan_local_models, state="normal")
-            get_button.configure(text="Scan again", command=scan_local_models, state="normal")
-            return True
 
         def refresh_provider(provider: str) -> None:
             name = provider if provider in PROVIDER_CONFIGS else provider_var.get()
@@ -1764,26 +1718,26 @@ class Calibrator(ctk.CTkToplevel):
             error_label.configure(text="")
             if name == LOCAL_PROVIDER:
                 key_holder["key"] = None
-                key_label.configure(text="LOCAL SERVER · NO API KEY")
+                key_label.configure(text="API KEY · NOT NEEDED FOR LOCAL LLM")
                 key_entry.configure(
-                    state="disabled", show="", placeholder_text="Local server runs on this PC"
+                    state="disabled", show="", placeholder_text="Ollama does not use an API key"
                 )
                 saved_note.configure(
-                    text=("No runtime or model is installed or downloaded by this app. It can only use "
-                          "an already-installed vision model exposed by an active local server."),
+                    text=("Runs on this PC without API charges. Install Ollama and download "
+                          f"the vision model first: ollama pull {LOCAL_MODEL} (about 3.2 GB). "
+                          "It can use substantial RAM/VRAM while Roblox is open."),
                     text_color=WARNING,
                 )
-                saved_button.configure(
-                    text="Start selected local model", state="disabled",
-                    command=lambda: start_with(None),
-                )
+                saved_button.configure(text="Start local LLM", state="normal")
                 save_button.configure(
-                    text="Scan local models", command=scan_local_models, state="normal",
+                    text="Model guide",
+                    command=lambda: __import__("webbrowser").open(LOCAL_MODEL_URL),
                 )
                 get_button.configure(
-                    text="Scan again", command=scan_local_models, state="normal",
+                    text="Install Ollama",
+                    command=lambda: __import__("webbrowser").open(LOCAL_DOWNLOAD_URL),
+                    state="normal",
                 )
-                scan_local_models()
                 return
 
             key_label.configure(text="API KEY")
@@ -1815,30 +1769,14 @@ class Calibrator(ctk.CTkToplevel):
         def start_with(key: str | None) -> None:
             provider = provider_var.get()
             model = model_entry.get().strip() or PROVIDER_CONFIGS[provider]["model"]
-            local_endpoint = None
-            if provider == LOCAL_PROVIDER:
-                options = local_model_holder.get("models") or []
-                match = next((item for item in options if item.get("model") == model), None)
-                if match is None:
-                    if scan_local_models():
-                        error_label.configure(
-                            text="Local models were refreshed. Review the selected model, then press Start again."
-                        )
-                    else:
-                        error_label.configure(
-                            text="No already-installed local vision model is available. Nothing was downloaded."
-                        )
-                    return
-                model = match["model"]
-                local_endpoint = match["endpoint"]
-            elif not key:
+            if provider != LOCAL_PROVIDER and not key:
                 error_label.configure(text=f"Enter a {provider} API key or choose Use saved key.")
                 return
             if not model:
-                error_label.configure(text="Choose or detect an installed vision model first.")
+                error_label.configure(text="Enter a model ID that supports image input.")
                 return
             close_dialog()
-            self._ai_begin(key or "", provider, model, local_endpoint=local_endpoint)
+            self._ai_begin(key or "", provider, model)
 
         def start_saved() -> None:
             start_with(key_holder.get("key"))
@@ -2002,8 +1940,7 @@ class Calibrator(ctk.CTkToplevel):
         else:
             self._ai_close_toast()
 
-    def _ai_begin(self, api_key: str, provider: str = "Gemini", model: str | None = None,
-                  local_endpoint: str | None = None) -> None:
+    def _ai_begin(self, api_key: str, provider: str = "Gemini", model: str | None = None) -> None:
         if self._ai_running:
             return
         if provider not in PROVIDER_CONFIGS:
@@ -2041,7 +1978,7 @@ class Calibrator(ctk.CTkToplevel):
         except Exception:  # noqa: BLE001
             pass
         self._ai_thread = threading.Thread(
-            target=self._ai_worker, args=(api_key, provider, model, local_endpoint),
+            target=self._ai_worker, args=(api_key, provider, model),
             name="FishingMacro-AICalibration", daemon=True,
         )
         self._ai_thread.start()
@@ -2082,8 +2019,7 @@ class Calibrator(ctk.CTkToplevel):
             return left < x1 and right > x0 and top < y1 and bottom > y0
         return True
 
-    def _ai_worker(self, api_key: str, provider: str, model: str,
-                   local_endpoint: str | None = None) -> None:
+    def _ai_worker(self, api_key: str, provider: str, model: str) -> None:
         """Capture only a confirmed game window; throttle API calls and stop cleanly."""
         from bloxfish.capture import Screen, find_game_window
         from PIL import Image as PILImage
@@ -2101,7 +2037,6 @@ class Calibrator(ctk.CTkToplevel):
         active_provider = provider
         active_model = model
         active_api_key = api_key
-        active_local_endpoint = local_endpoint
         min_request_interval = 1.0 if provider == LOCAL_PROVIDER else 8.0
         max_requests = 18
         deadline = started + 12 * 60
@@ -2138,42 +2073,32 @@ class Calibrator(ctk.CTkToplevel):
                             masked, active_api_key, ASSETS,
                             timeout=75.0 if active_provider == LOCAL_PROVIDER else 35.0,
                             provider=active_provider, model=active_model,
-                            local_endpoint=active_local_endpoint,
                         )
                     except GeminiCalibrationError as provider_error:
                         if active_provider == LOCAL_PROVIDER or not is_quota_or_credit_error(provider_error):
                             raise
                         self._ai_dispatch_message(
-                            f"{active_provider} quota/credits are exhausted. Checking already-installed local vision models…\n\n"
-                            "No local runtime or model will be installed or downloaded."
+                            f"{active_provider} quota/credits are exhausted. Trying the local vision LLM…\n\n"
+                            "Local inference uses no API credits. It needs Ollama and the qwen2.5vl:3b model."
                         )
-                        local_options = discover_local_vision_models(timeout=0.35)
-                        if not local_options:
-                            raise GeminiCalibrationError(
-                                f"{provider_error}\n\nAutomatic local fallback is unavailable: no already-running "
-                                "local vision server/model was detected. No downloads were started. Start a "
-                                "compatible local server with an installed vision model and retry."
-                            ) from provider_error
-                        selected_local = local_options[0]
-                        active_local_endpoint = selected_local["endpoint"]
-                        active_model = selected_local["model"]
                         try:
                             result = analyze_screenshot(
                                 masked, "", ASSETS, timeout=75.0,
-                                provider=LOCAL_PROVIDER, model=active_model,
-                                local_endpoint=active_local_endpoint,
+                                provider=LOCAL_PROVIDER, model=LOCAL_MODEL,
                             )
                         except GeminiCalibrationError as local_error:
                             raise GeminiCalibrationError(
-                                f"{provider_error}\n\nAutomatic local fallback could not start: {local_error}"
+                                f"{provider_error}\n\nAutomatic local fallback could not start: {local_error}\n\n"
+                                f"To enable it, install Ollama from {LOCAL_DOWNLOAD_URL}, then run "
+                                f"ollama pull {LOCAL_MODEL} (model download is about 3.2 GB)."
                             ) from local_error
                         active_provider = LOCAL_PROVIDER
+                        active_model = LOCAL_MODEL
                         active_api_key = ""
                         min_request_interval = 1.0
                         self._ai_provider = LOCAL_PROVIDER
                         self._ai_dispatch_message(
-                            f"Continuing with the already-installed local vision model {active_model}. "
-                            "No cloud credits, runtime installations, or model downloads are used."
+                            "Continuing with the local vision LLM. API credits will not be used for the remaining screenshots."
                         )
                     requests_made += 1
                     last_request_at = time.monotonic()
