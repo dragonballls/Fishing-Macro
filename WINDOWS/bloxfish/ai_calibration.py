@@ -290,21 +290,36 @@ class ScreenVideoRecorder:
                     writer = cv2.VideoWriter(
                         str(target), cv2.VideoWriter_fourcc(*codec), self.fps, (width, height)
                     )
-                    if writer.isOpened():
-                        self._writer = writer
-                        self.path = target
-                        self._size = (width, height)
-                        self.write(frame_bgr)
-                        return target
+                    opened = writer.isOpened()
                 except Exception:  # noqa: BLE001
                     # A codec may throw during initialization; try the AVI fallback.
-                    pass
-                finally:
-                    if writer is not None and writer is not self._writer:
+                    opened = False
+                if not opened:
+                    if writer is not None:
                         try:
                             writer.release()
                         except Exception:  # noqa: BLE001
                             pass
+                    continue
+                self._writer = writer
+                self.path = target
+                self._size = (width, height)
+                try:
+                    self.write(frame_bgr)
+                    return target
+                except Exception:  # noqa: BLE001
+                    # If the first encoded frame fails, release this codec and retry.
+                    self._writer = None
+                    self.path = None
+                    self._size = None
+                    try:
+                        writer.release()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        target.unlink(missing_ok=True)
+                    except OSError:
+                        pass
         except GeminiCalibrationError:
             raise
         except Exception as exc:  # noqa: BLE001
