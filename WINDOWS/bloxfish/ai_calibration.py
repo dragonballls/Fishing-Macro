@@ -1,9 +1,8 @@
 """Vision-LLM-assisted, review-before-save calibration for Fishing-Macro.
 
 Cloud providers receive the Roblox client window and bundled calibration
-references. The optional local provider talks only to already-running,
-OpenAI-compatible local vision servers. It never installs a runtime or downloads
-a model. Captures stay in memory; cloud API keys use the OS credential store.
+references. The optional Ollama provider processes images on loopback. Captures
+stay in memory; cloud API keys use the OS credential store.
 """
 from __future__ import annotations
 from copy import deepcopy
@@ -21,24 +20,11 @@ MODEL_NAME = "gemini-3.8-flash"
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL_NAME + ":generateContent"
 KEY_SERVICE = "FishingMacro.GeminiAutoCalibration"
 KEY_USER = "gemini-api-key"
-LOCAL_PROVIDER = "Local vision LLM (already installed)"
-LOCAL_MODEL = ""
-# LM Studio is the default endpoint; model discovery also checks other common
-# OpenAI-compatible local servers. Ollama is intentionally not installed,
-# started, or queried by this feature.
-LOCAL_ENDPOINT = "http://127.0.0.1:1234/v1/chat/completions"
-_LOCAL_SERVER_CANDIDATES = (
-    ("LM Studio", "http://127.0.0.1:1234/v1"),
-    ("llama.cpp / LocalAI", "http://127.0.0.1:8080/v1"),
-    ("vLLM", "http://127.0.0.1:8000/v1"),
-    ("Text Generation WebUI", "http://127.0.0.1:5000/v1"),
-)
-_LOCAL_VISION_HINTS = (
-    "vision", "llava", "internvl", "minicpm-v", "pixtral", "smolvlm",
-    "molmo", "idefics", "fuyu", "qwen-vl", "qwen2vl", "qwen2.5vl",
-    "qwen3vl", "qwen2.5-vl", "qwen2-vl", "qwen3-vl", "gemma-3",
-    "llama-4", "llama4", "phi-3.5-vision", "granite-vision",
-)
+LOCAL_PROVIDER = "Local LLM (Ollama)"
+LOCAL_MODEL = "qwen2.5vl:3b"
+LOCAL_ENDPOINT = "http://127.0.0.1:11434/v1/chat/completions"
+LOCAL_DOWNLOAD_URL = "https://ollama.com/download"
+LOCAL_MODEL_URL = "https://ollama.com/library/qwen2.5vl"
 MIN_CONFIDENCE = 0.88
 
 # Every configured service below accepts image input at its documented endpoint.
@@ -162,77 +148,6 @@ def is_quota_or_credit_error(error: BaseException) -> bool:
     ))
 
 
-def _is_likely_vision_model(model_id: str) -> bool:
-    """Conservatively recognize common multimodal model names; never download anything."""
-    normalized = model_id.casefold().replace("_", "-")
-    return any(hint in normalized for hint in _LOCAL_VISION_HINTS)
-
-
-def discover_local_vision_models(timeout: float = 0.45) -> list[dict[str, str]]:
-    """Discover likely vision models exposed by existing loopback OpenAI-compatible servers.
-
-    Only checks localhost endpoints. It does not launch services, invoke package
-    managers, pull models, or contact a remote host.
-    """
-    found: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for server_name, base_url in _LOCAL_SERVER_CANDIDATES:
-        url = base_url.rstrip("/") + "/models"
-        request = urllib.request.Request(
-            url, headers={"Accept": "application/json"}, method="GET"
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-                OSError, json.JSONDecodeError, UnicodeDecodeError):
-            continue
-        items = payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else []
-        if isinstance(items, dict):
-            items = list(items.values())
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if isinstance(item, str):
-                model_id = item.strip()
-            elif isinstance(item, dict):
-                model_id = item.get("id") or item.get("model") or item.get("name") or ""
-                model_id = model_id.strip() if isinstance(model_id, str) else ""
-            else:
-                continue
-            identity = (base_url, model_id)
-            if not model_id or identity in seen or not _is_likely_vision_model(model_id):
-                continue
-            if len(model_id) > 120 or any(
-                not (ch.isalnum() or ch in "._/:-") for ch in model_id
-            ):
-                continue
-            seen.add(identity)
-            found.append({
-                "server": server_name,
-                "base_url": base_url,
-                "endpoint": base_url.rstrip("/") + "/chat/completions",
-                "model": model_id,
-            })
-    return found
-
-
-def _is_safe_local_endpoint(endpoint: str) -> bool:
-    """Only allow loopback HTTP endpoints from the local-server discovery list."""
-    from urllib.parse import urlparse
-    try:
-        parsed = urlparse(endpoint)
-        return (
-            parsed.scheme == "http"
-            and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-            and parsed.path.rstrip("/") == "/v1/chat/completions"
-            and not parsed.username
-            and not parsed.password
-        )
-    except (TypeError, ValueError):
-        return False
-
-
 def _provider_key_location(provider: str = "Gemini") -> tuple[str, str]:
     """Return a provider-specific credential-store identity."""
     if provider not in PROVIDER_CONFIGS:
@@ -263,7 +178,7 @@ def get_saved_api_key(provider: str = "Gemini") -> str | None:
 def save_api_key(api_key: str, provider: str = "Gemini") -> None:
     """Store the selected provider's non-empty key in the OS credential store."""
     if provider == LOCAL_PROVIDER:
-        raise GeminiCalibrationError("The local vision provider does not use an API key.")
+        raise GeminiCalibrationError("The local Ollama provider does not use an API key.")
     api_key = api_key.strip()
     if not api_key or len(api_key) > 512 or any(ch.isspace() for ch in api_key):
         raise GeminiCalibrationError(f"Enter a valid {provider} API key.")
@@ -473,14 +388,8 @@ def validate_response(raw: dict[str, Any]) -> dict[str, Any]:
 def analyze_screenshot(
     frame_bgr, api_key: str, asset_root: str | Path,
     timeout: float = 35.0, provider: str = "Gemini", model: str | None = None,
-    local_endpoint: str | None = None,
 ) -> dict[str, Any]:
-    """Analyze one live game-window frame using a selected vision API.
-
-    For the local provider, the caller may pass an endpoint returned by
-    discover_local_vision_models(); no local runtime is installed and no model
-    is downloaded by this function.
-    """
+    """Analyze one live game-window frame using a selected vision API."""
     api_key = (api_key or "").strip()
     if provider != LOCAL_PROVIDER and not api_key:
         raise GeminiCalibrationError(f"No {provider} API key was provided.")
@@ -488,31 +397,7 @@ def analyze_screenshot(
     if config is None:
         raise GeminiCalibrationError("Choose a supported AI provider.")
     model = (model or "").strip() or config["model"]
-    if provider == LOCAL_PROVIDER:
-        if local_endpoint and not _is_safe_local_endpoint(local_endpoint):
-            raise GeminiCalibrationError("Local vision endpoint must be an HTTP loopback /v1/chat/completions URL.")
-        if not model or model.casefold() in {"auto", "auto-detect"}:
-            local_models = discover_local_vision_models()
-            if local_endpoint:
-                local_models = [item for item in local_models if item["endpoint"] == local_endpoint]
-            if not local_models:
-                raise GeminiCalibrationError(
-                    "No already-running local vision model was found. No runtime or model was installed. "
-                    "Start an existing compatible vision server (such as LM Studio or llama.cpp), "
-                    "then scan local models again."
-                )
-            model = local_models[0]["model"]
-            local_endpoint = local_models[0]["endpoint"]
-        elif not local_endpoint:
-            local_models = discover_local_vision_models()
-            match = next((item for item in local_models if item["model"] == model), None)
-            if not match:
-                raise GeminiCalibrationError(
-                    f"The local model '{model}' was not found on a compatible local vision server. "
-                    "No model will be downloaded. Click Scan local models and select an installed vision model."
-                )
-            local_endpoint = match["endpoint"]
-    allowed_model_chars = "._/-:" if provider == LOCAL_PROVIDER else "._/-"
+    allowed_model_chars = "._/-" + (":" if provider == LOCAL_PROVIDER else "")
     if (len(model) > 120 or not model
             or not all(ch.isalnum() or ch in allowed_model_chars for ch in model)
             or ".." in model or model.startswith("/") or model.endswith("/")):
@@ -606,9 +491,8 @@ All suggested changes are reviewed in the app before saving.
             if provider == "OpenRouter":
                 headers["HTTP-Referer"] = "https://github.com/dragonballls/Fishing-Macro"
                 headers["X-Title"] = "Fishing Macro"
-            endpoint = local_endpoint if provider == LOCAL_PROVIDER else config["endpoint"]
             request = urllib.request.Request(
-                endpoint,
+                config["endpoint"],
                 data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
                 headers=headers,
                 method="POST",
@@ -617,11 +501,15 @@ All suggested changes are reviewed in the app before saving.
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        if provider == LOCAL_PROVIDER and exc.code in (400, 404, 422, 500):
+        if provider == LOCAL_PROVIDER and exc.code == 404:
             raise GeminiCalibrationError(
-                f"The local vision server rejected model '{model}' (HTTP {exc.code}). "
-                "Confirm the selected model is already loaded and accepts image input; "
-                "no model will be downloaded by the app."
+                f"Ollama could not find the local vision model '{model}'. "
+                f"Install it from {LOCAL_MODEL_URL}, then run: ollama pull {model}"
+            ) from exc
+        if provider == LOCAL_PROVIDER and exc.code in (400, 500):
+            raise GeminiCalibrationError(
+                f"Ollama rejected the local vision request. Confirm '{model}' is installed "
+                "and supports image input; if needed, run its ollama pull command again."
             ) from exc
         if exc.code in (401, 403):
             raise GeminiCalibrationError(
@@ -643,9 +531,9 @@ All suggested changes are reviewed in the app before saving.
     except urllib.error.URLError as exc:
         if provider == LOCAL_PROVIDER:
             raise GeminiCalibrationError(
-                "No connection to the selected local vision server. This app does not install "
-                "runtimes or download models. Start an already-installed OpenAI-compatible local "
-                "vision server (LM Studio, llama.cpp, or vLLM), then click Scan local models."
+                "Could not connect to Ollama at 127.0.0.1:11434. Install/start Ollama, "
+                f"then run: ollama pull {model}. The model is downloaded separately and "
+                "local inference can use substantial RAM/VRAM."
             ) from exc
         raise GeminiCalibrationError(
             f"Could not reach {provider}. Check your internet connection and selected model, then retry."
@@ -653,8 +541,7 @@ All suggested changes are reviewed in the app before saving.
     except TimeoutError as exc:
         if provider == LOCAL_PROVIDER:
             raise GeminiCalibrationError(
-                "The local vision model timed out. Retry when your PC is less busy, or choose another "
-                "already-installed local vision model. No downloads were started."
+                "The local vision model timed out. Retry when the PC is less busy or use a cloud provider."
             ) from exc
         raise GeminiCalibrationError(f"{provider} timed out; retry the current calibration step.") from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
