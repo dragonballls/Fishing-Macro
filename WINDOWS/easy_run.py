@@ -88,9 +88,9 @@ except ImportError:                                # noqa: BLE001
 
 from bloxfish.config import Config, COOLDOWNS, VERSION  # noqa: E402
 from bloxfish.ai_calibration import (  # noqa: E402
-    GeminiCalibrationError, PROVIDERS, PROVIDER_CONFIGS, analyze_screenshot, notice_x_position,
-    capture_config_values, get_saved_api_key, is_quota_or_credit_error,
-    restore_config_values, save_api_key, screen_changed,
+    GeminiCalibrationError, PROVIDERS, PROVIDER_CONFIGS, ScreenVideoRecorder,
+    analyze_screenshot_with_fallback, notice_x_position, capture_config_values,
+    get_saved_api_key, restore_config_values, save_api_key, screen_changed,
     should_replace_proposal,
 )
 from bloxfish.engine import FishingEngine          # noqa: E402
@@ -1662,8 +1662,8 @@ class Calibrator(ctk.CTkToplevel):
 
         dialog = ctk.CTkToplevel(self)
         dialog.title("AI Auto-Calibrate")
-        dialog.geometry("590x610")
-        dialog.minsize(560, 590)
+        dialog.geometry("590x700")
+        dialog.minsize(560, 670)
         dialog.resizable(True, True)
         dialog.transient(self)
         dialog.attributes("-topmost", True)
@@ -1686,13 +1686,31 @@ class Calibrator(ctk.CTkToplevel):
         ).pack(fill="x", padx=18, pady=(0, 10))
         ctk.CTkLabel(
             shell,
-            text=("Privacy: screenshots are sent to the provider you select below, not "
-                  "saved as screenshot files by this feature. API keys are stored in "
-                  "Windows Credential Manager, separately for each provider. Provider "
-                  "quotas and billing rules still apply."),
+            text=("Only individual still images you request are sent to the selected AI "
+                  "provider. API keys stay in Windows Credential Manager. The optional "
+                  "video below is stored locally and is never uploaded. Provider quotas "
+                  "and billing rules still apply."),
             text_color="#fbbf24", justify="left", anchor="w", wraplength=510,
             font=ctk.CTkFont(size=11, weight="bold"),
-        ).pack(fill="x", padx=18, pady=(0, 10))
+        ).pack(fill="x", padx=18, pady=(0, 6))
+
+        record_video_var = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            shell,
+            text="Record the Roblox client locally while calibration runs",
+            variable=record_video_var,
+            text_color=TEXT,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).pack(fill="x", padx=18, pady=(2, 2))
+        ctk.CTkLabel(
+            shell,
+            text="Saves a low-resource 5 FPS video to Videos\\FishingMacro. "
+                 "AI analysis is manual: press Capture current screen to send one still.",
+            text_color=MUTED, justify="left", anchor="w", wraplength=510,
+            font=ctk.CTkFont(size=10),
+        ).pack(fill="x", padx=18, pady=(0, 7))
 
         ctk.CTkLabel(shell, text="VISION PROVIDER", text_color=ACCENT,
                      anchor="w", font=ctk.CTkFont(size=10, weight="bold")).pack(
@@ -1786,8 +1804,9 @@ class Calibrator(ctk.CTkToplevel):
                 error_label.configure(text="Enter a model ID that supports image input.")
                 return
             dialog_started["value"] = True
+            record_video = bool(record_video_var.get())
             close_dialog()
-            self._ai_begin(key or "", provider, model)
+            self._ai_begin(key or "", provider, model, record_video=record_video)
 
         def start_saved() -> None:
             start_with(key_holder.get("key"))
@@ -1947,7 +1966,7 @@ class Calibrator(ctk.CTkToplevel):
     def _ai_request_stop(self) -> None:
         if self._ai_running:
             self._ai_stop_event.set()
-            self._ai_toast_message("Stopping capture safely and preparing the review canvas…")
+            self._ai_toast_message("Stopping screenshot monitoring and finalizing the local recording…")
             button = getattr(self, "_ai_stop_button", None)
             if button is not None:
                 try:
@@ -1957,7 +1976,10 @@ class Calibrator(ctk.CTkToplevel):
         else:
             self._ai_close_toast()
 
-    def _ai_begin(self, api_key: str, provider: str = "Gemini", model: str | None = None) -> None:
+    def _ai_begin(
+        self, api_key: str, provider: str = "Gemini", model: str | None = None,
+        *, record_video: bool = False,
+    ) -> None:
         if self._ai_running:
             return
         if provider not in PROVIDER_CONFIGS:
@@ -1972,6 +1994,8 @@ class Calibrator(ctk.CTkToplevel):
         retake_key = self._ai_retake_key
         self._ai_retake_key = None
         self._ai_provider = provider
+        self._ai_record_video = bool(record_video)
+        self._ai_recording_path = None
         self._ai_stop_event = threading.Event()
         self._ai_force_event = threading.Event()
         self._ai_running = True
@@ -1982,8 +2006,11 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_last_win = None
         self._ai_make_toast()
         self._ai_toast_message(
-            f"{provider} calibration is starting. Live capture is active: the app samples the actual Roblox client window and analyzes a fresh screenshot when the view changes or you press Capture current screen. "
-            "These are in-memory screenshots, not a video recording saved to disk. Follow each NEXT STEP prompt. Nothing is saved to calibration until you review it and press Save calibration."
+            f"{provider} calibration is starting. A local video recording is "
+            f"{'ON' if self._ai_record_video else 'OFF'}; it is never uploaded. "
+            "AI screenshot analysis runs only when you press Capture current screen, "
+            "so screen changes will not silently trigger more API calls. "
+            "Nothing is saved to calibration until you review it and press Save calibration."
         )
         try:
             self.master_app.withdraw()
@@ -2044,6 +2071,8 @@ class Calibrator(ctk.CTkToplevel):
         from PIL import Image as PILImage
 
         screen = None
+        recorder_thread = None
+        recording_state = {"path": None, "error": None}
         proposals = dict(getattr(self, "_ai_pending", {}))
         evidence = dict(getattr(self, "_ai_evidence", {}))
         updated_keys: set[str] = set()
@@ -2062,6 +2091,60 @@ class Calibrator(ctk.CTkToplevel):
         deadline = started + 12 * 60
         try:
             screen = Screen()
+
+            if getattr(self, "_ai_record_video", False):
+                def record_game_window() -> None:
+                    """Record the identified Roblox client independently of AI HTTP calls."""
+                    record_screen = None
+                    recorder = ScreenVideoRecorder(fps=5.0)
+                    try:
+                        record_screen = Screen()
+                        while not self._ai_stop_event.is_set():
+                            rec_win, rec_found = find_game_window(self.cfg.window_title, record_screen)
+                            if not rec_found:
+                                recording_state["error"] = (
+                                    "Local recording stopped because the Roblox client window "
+                                    "could no longer be identified."
+                                )
+                                break
+                            rec_frame = record_screen.grab(rec_win)
+                            rec_frame, _ = self._ai_mask_overlay(
+                                rec_frame, rec_win, self._ai_overlay_rect
+                            )
+                            if recorder.path is None:
+                                recording_state["path"] = str(recorder.start(rec_frame))
+                                self._ai_dispatch_message(
+                                    "Local Roblox video recording started. The file stays on "
+                                    "this PC; AI receives only stills you manually request."
+                                )
+                            else:
+                                recorder.write(rec_frame)
+                            time.sleep(0.2)
+                    except GeminiCalibrationError as exc:
+                        recording_state["error"] = str(exc)
+                    except Exception as exc:  # noqa: BLE001
+                        recording_state["error"] = (
+                            f"Local recording failed safely ({type(exc).__name__})."
+                        )
+                    finally:
+                        try:
+                            saved_path = recorder.close()
+                            if saved_path is not None:
+                                recording_state["path"] = str(saved_path)
+                        except Exception as exc:  # noqa: BLE001
+                            recording_state["error"] = (
+                                f"The local video could not be finalized ({type(exc).__name__})."
+                            )
+                        if record_screen is not None:
+                            record_screen.close()
+
+                recorder_thread = threading.Thread(
+                    target=record_game_window,
+                    name="FishingMacro-LocalVideoRecording",
+                    daemon=True,
+                )
+                recorder_thread.start()
+
             while not self._ai_stop_event.is_set():
                 now = time.monotonic()
                 if now >= deadline:
@@ -2080,27 +2163,32 @@ class Calibrator(ctk.CTkToplevel):
                 )
                 last_frame, last_win = masked.copy(), win
                 force = self._ai_force_event.is_set()
-                changed = (last_analyzed is None or screen_changed(last_analyzed, masked))
                 due = now - last_request_at >= min_request_interval
-                if due and (changed or force):
+                # Continuous capture is reserved for the local video writer.
+                # Only an explicit user action sends a still image to an AI API.
+                if due and force:
                     self._ai_force_event.clear()
                     self._ai_dispatch_message(
                         f"Capturing and analyzing screenshot {requests_made + 1}/{max_requests} with {active_provider}…\n\n"
                         "Keep Roblox visible and avoid dragging or resizing the game while the request runs."
                     )
                     try:
-                        result = analyze_screenshot(
-                            masked, active_api_key, ASSETS,
-                            timeout=35.0,
-                            provider=active_provider, model=active_model,
+                        previous_provider = active_provider
+                        result, active_provider, active_model, active_api_key = (
+                            analyze_screenshot_with_fallback(
+                                masked, active_api_key, ASSETS,
+                                timeout=35.0,
+                                provider=active_provider, model=active_model,
+                            )
                         )
-                    except GeminiCalibrationError as provider_error:
-                        if is_quota_or_credit_error(provider_error):
-                            raise GeminiCalibrationError(
-                                f"{provider_error}\n\n"
-                                "No local fallback is enabled. Select a different cloud provider "
-                                "with its own valid API key, then retry. No calibration was saved or changed."
-                            ) from provider_error
+                        self._ai_provider = active_provider
+                        if active_provider != previous_provider:
+                            self._ai_dispatch_message(
+                                f"{previous_provider} hit a quota/credit limit. "
+                                "Continuing with your saved OpenRouter/free vision route. "
+                                "No paid fallback provider was contacted."
+                            )
+                    except GeminiCalibrationError:
                         raise
                     requests_made += 1
                     last_request_at = time.monotonic()
@@ -2134,7 +2222,8 @@ class Calibrator(ctk.CTkToplevel):
                         f"{summary}\n\nNEXT STEP\n{instruction}\n\n"
                         f"Reviewable targets found: {len(proposals)} unique "
                         f"controls · analysis {requests_made}/{max_requests}. "
-                        "Use Capture current screen after changing the visible game state. "
+                        "Local recording, if enabled, continues independently. Press Capture current screen "
+                        "after changing the visible game state to request one still analysis. "
                         "Suggestions remain unsaved until you review and press Save calibration."
                     )
                 elif force and not due:
@@ -2150,22 +2239,38 @@ class Calibrator(ctk.CTkToplevel):
         except Exception as exc:  # noqa: BLE001
             error = f"Calibration stopped safely ({type(exc).__name__}). Check Roblox is open, then retry."
         finally:
+            # Stop and finalize the local writer even on provider errors/timeouts.
+            self._ai_stop_event.set()
+            if recorder_thread is not None:
+                recorder_thread.join(timeout=10.0)
+                if recorder_thread.is_alive():
+                    recording_state["error"] = (
+                        "The local recording worker did not stop within 10 seconds; "
+                        "check the saved file before replaying it."
+                    )
             if screen is not None:
                 screen.close()
+            recording_path = recording_state.get("path")
+            recording_error = recording_state.get("error")
+            self._ai_recording_path = recording_path
             self._ai_request_count = requests_made
             self._ai_pending = dict(proposals)
             self._ai_evidence = dict(evidence)
             try:
                 self.after(0, lambda: self._ai_finish(
                     proposals, evidence, last_frame, last_win, error, requests_made,
-                    updated_keys
+                    updated_keys, recording_path, recording_error
                 ))
             except Exception:  # noqa: BLE001
                 pass
 
-    def _ai_finish(self, proposals, evidence, last_frame, last_win,
-                   error: str | None, request_count: int,
-                   updated_keys: set[str] | None = None) -> None:
+    def _ai_finish(
+        self, proposals, evidence, last_frame, last_win,
+        error: str | None, request_count: int,
+        updated_keys: set[str] | None = None,
+        recording_path: str | None = None,
+        recording_error: str | None = None,
+    ) -> None:
         """Show separate AI candidates without changing the current calibration."""
         # Restore the workspace only after capture stops, before touching its
         # canvas. The notice stays topmost with the final summary until closed.
@@ -2220,6 +2325,13 @@ class Calibrator(ctk.CTkToplevel):
             result_line = "No candidates passed the 68% review floor plus visibility and geometry checks. Existing calibration was left unchanged."
         if error:
             result_line += "\n" + error
+        if recording_path:
+            result_line += (
+                f"\nLocal Roblox recording saved to: {recording_path}"
+                "\nThe video stayed on this PC. Only still images you requested were sent to the AI provider."
+            )
+        if recording_error:
+            result_line += f"\nLocal recording notice: {recording_error}"
         result_line += (
             f"\n{self._ai_provider} analyses used: {request_count}. "
             "Select a control to compare its dashed amber AI candidate with the current placement. "
