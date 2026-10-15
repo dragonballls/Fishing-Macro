@@ -101,14 +101,12 @@ If the main hotkeys do not work, the window has buttons that do the same thing
 ### Multi-provider vision-assisted automatic calibration
 
 The calibration window includes **AI Auto-Calibrate** with selectable vision
-providers: **OpenRouter, Groq, OpenAI, Mistral, Gemini, and Local vision LLM
-(already installed)**. OpenRouter defaults to its openrouter/free router, which
-selects an available model compatible with image input. Free routes still have
-usage limits and availability can change. Each cloud provider has a **Get key**
-shortcut and editable model ID. The local-only option never installs software,
-starts a runtime, contacts a remote host, or downloads a model. It only detects
-vision models already exposed by a running OpenAI-compatible server on loopback:
-LM Studio, llama.cpp/LocalAI, vLLM, or Text Generation WebUI.
+providers: **OpenRouter, Groq, OpenAI, Mistral, Gemini, and Local LLM (Ollama)**.
+OpenRouter defaults to its openrouter/free router, which selects an available
+model compatible with image input. Free routes still have usage limits and
+availability can change. Each cloud provider has a **Get key** shortcut and an
+editable model ID. The local option uses a vision model on this PC and does
+not consume API credits; it requires Ollama and a model download.
 
 Each provider's API key is stored separately in the operating-system credential
 store, not in `config.json`, the repository, or logs. The original Gemini
@@ -123,13 +121,13 @@ show next. Follow the instruction; when the requested UI is visible, use
 **Capture current screen** to request an additional analysis. This is sequential,
 screen-guided calibration: hidden buttons cannot be safely located from a
 screenshot that does not show them, so the app asks you to open the matching
-fishing, reel, or NPC UI. If a cloud provider returns a quota/credit error, the app checks
-for an already-running local vision server and automatically tries the first
-detected compatible vision model for this and subsequent steps. Local fallback
-works only if you already have a capable vision model installed and loaded in
-one of the supported local servers; it never installs a runtime, pulls a model,
-or starts a download. If none is detected, the app reports that local fallback
-is unavailable rather than downloading anything.
+fishing, reel, or NPC UI. If a cloud provider returns a quota/credit error, the
+app automatically tries the local vision model for this and subsequent steps.
+The local fallback needs Ollama plus qwen2.5vl:3b; install Ollama from
+https://ollama.com/download, then run "ollama pull qwen2.5vl:3b" once. The
+model download is about 3.2 GB, and local inference can use substantial RAM/VRAM
+while Roblox is open. The fallback does not run unless the cloud request reports
+a quota/credit error.
 
 The app refuses to upload a full-monitor fallback if it cannot identify the
 Roblox client, masks its own notification area before image analysis, rejects
@@ -137,9 +135,8 @@ low-confidence or invalid coordinates, and ignores proposals that overlap the
 masked area. Screenshots are not written to disk by this feature. Cloud
 providers receive the game-window screenshot and bundled calibration reference
 sheet, so review the selected provider's data handling, usage limits and billing
-rules. With the local-only provider, both images are sent only to the already-running
-loopback server (127.0.0.1). Model discovery also checks loopback endpoints only.
-Keep cloud API keys private.
+rules. With Local LLM (Ollama), both images are sent only to the local service
+at 127.0.0.1 instead. Keep cloud API keys private.
 
 AI-suggested boxes and click points are only placed on the calibration canvas
 for review. **Nothing is written to `config.json` automatically.** Select each
