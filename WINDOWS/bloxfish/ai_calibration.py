@@ -8,6 +8,7 @@ in the integrated capture flow.
 from __future__ import annotations
 from copy import deepcopy
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 import base64
 import io
 import json
@@ -41,7 +42,7 @@ PROVIDER_CONFIGS = {
     "Groq": {
         "kind": "openai",
         "endpoint": "https://api.groq.com/openai/v1/chat/completions",
-        "model": "qwen/qwen3.6-27b",
+        "model": "qwen/qwen3.8-27b",
     },
     "OpenAI": {
         "kind": "openai",
@@ -249,6 +250,84 @@ def _image_bytes(frame_bgr, max_edge: int = 1600) -> bytes:
         return out.getvalue()
     except Exception as exc:  # noqa: BLE001
         raise GeminiCalibrationError("Could not prepare the game screenshot.") from exc
+
+
+class ScreenVideoRecorder:
+    """Save an explicitly requested, local-only recording of the Roblox client.
+
+    Only the selected game-window frames are written. The recording file is
+    never passed to an AI provider; calibration still sends individual,
+    change-triggered frames for analysis.
+    """
+
+    def __init__(self, output_dir: str | Path | None = None, fps: float = 5.0) -> None:
+        self.output_dir = Path(output_dir) if output_dir is not None else (
+            Path.home() / "Videos" / "FishingMacro"
+        )
+        self.fps = max(1.0, min(float(fps), 12.0))
+        self.path: Path | None = None
+        self._writer = None
+        self._size: tuple[int, int] | None = None
+
+    def start(self, frame_bgr) -> Path:
+        """Open a local MP4/AVI writer and seed it with the first frame."""
+        if self._writer is not None:
+            return self.path  # type: ignore[return-value]
+        try:
+            import cv2
+            height, width = frame_bgr.shape[:2]
+            if width < 2 or height < 2:
+                raise GeminiCalibrationError("The game window is too small to record.")
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            stem = "FishingMacro-AICalibration-" + datetime.now().strftime(
+                "%Y%m%d-%H%M%S-%f"
+            )
+            candidates = ((".mp4", "mp4v"), (".avi", "MJPG"))
+            for extension, codec in candidates:
+                target = self.output_dir / (stem + extension)
+                writer = cv2.VideoWriter(
+                    str(target), cv2.VideoWriter_fourcc(*codec), self.fps, (width, height)
+                )
+                if writer.isOpened():
+                    self._writer = writer
+                    self.path = target
+                    self._size = (width, height)
+                    self.write(frame_bgr)
+                    return target
+                writer.release()
+        except GeminiCalibrationError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise GeminiCalibrationError(
+                "Could not start a local Roblox screen recording. Check write access to "
+                "your Videos folder and restart the calibration session."
+            ) from exc
+        raise GeminiCalibrationError(
+            "Could not start a local Roblox screen recording because no supported "
+            "video encoder was available. Calibration has been stopped rather than "
+            "silently pretending to record."
+        )
+
+    def write(self, frame_bgr) -> None:
+        """Append a frame, resizing only if the client window changed size."""
+        if self._writer is None:
+            self.start(frame_bgr)
+            return
+        import cv2
+        width, height = self._size or (frame_bgr.shape[1], frame_bgr.shape[0])
+        if frame_bgr.shape[1] != width or frame_bgr.shape[0] != height:
+            frame_bgr = cv2.resize(frame_bgr, (width, height), interpolation=cv2.INTER_AREA)
+        self._writer.write(frame_bgr)
+
+    def close(self) -> Path | None:
+        """Finalize the file so it can be played immediately."""
+        writer, self._writer = self._writer, None
+        if writer is not None:
+            try:
+                writer.release()
+            finally:
+                pass
+        return self.path
 
 
 def _reference_sheet(asset_root: Path) -> bytes | None:
@@ -576,3 +655,55 @@ All suggested changes are reviewed in the app before saving.
         raise GeminiCalibrationError(f"{provider} returned an invalid calibration response.")
     return validate_response(raw)
 
+
+
+
+def analyze_screenshot_with_fallback(
+    frame_bgr, api_key: str, asset_root: str | Path, *,
+    provider: str = "Gemini", model: str | None = None, timeout: float = 35.0,
+) -> tuple[dict[str, Any], str, str, str]:
+    """Analyze a frame and fail over only to the user's saved free OpenRouter route.
+
+    Paid providers are never invoked automatically. The OpenRouter fallback
+    runs only when the selected provider is quota/credit limited and a separate
+    OpenRouter key is already stored in the OS credential store.
+    """
+    selected_model = (model or "").strip() or PROVIDER_CONFIGS.get(
+        provider, PROVIDER_CONFIGS["Gemini"]
+    )["model"]
+    try:
+        result = analyze_screenshot(
+            frame_bgr, api_key, asset_root, timeout=timeout,
+            provider=provider, model=selected_model,
+        )
+        return result, provider, selected_model, api_key
+    except GeminiCalibrationError as primary_error:
+        if not is_quota_or_credit_error(primary_error):
+            raise
+        if provider == "OpenRouter":
+            raise GeminiCalibrationError(
+                f"{primary_error}\n\nOpenRouter's free vision router also hit a limit. "
+                "No paid provider was contacted automatically; choose another provider "
+                "and its own key, or retry after the limit resets."
+            ) from primary_error
+        try:
+            fallback_key = get_saved_api_key("OpenRouter")
+        except GeminiCalibrationError:
+            fallback_key = None
+        if not fallback_key:
+            raise GeminiCalibrationError(
+                f"{primary_error}\n\nAutomatic fallback needs a saved OpenRouter API key. "
+                "Choose OpenRouter and save its key once to enable quota fallback. "
+                "No paid provider will be contacted automatically."
+            ) from primary_error
+        try:
+            result = analyze_screenshot(
+                frame_bgr, fallback_key, asset_root, timeout=timeout,
+                provider="OpenRouter", model=PROVIDER_CONFIGS["OpenRouter"]["model"],
+            )
+        except GeminiCalibrationError as fallback_error:
+            raise GeminiCalibrationError(
+                f"{provider} was rate-limited, and automatic OpenRouter/free fallback "
+                f"also failed: {fallback_error}"
+            ) from fallback_error
+        return result, "OpenRouter", PROVIDER_CONFIGS["OpenRouter"]["model"], fallback_key
