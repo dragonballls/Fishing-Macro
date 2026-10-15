@@ -90,7 +90,7 @@ from bloxfish.config import Config, COOLDOWNS, VERSION  # noqa: E402
 from bloxfish.ai_calibration import (  # noqa: E402
     GeminiCalibrationError, PROVIDERS, PROVIDER_CONFIGS, ScreenVideoRecorder,
     analyze_screenshot_with_fallback, notice_x_position, capture_config_values,
-    get_saved_api_key, restore_config_values, save_api_key, screen_changed,
+    get_saved_api_key, restore_config_values, save_api_key,
     should_replace_proposal,
 )
 from bloxfish.engine import FishingEngine          # noqa: E402
@@ -2076,7 +2076,6 @@ class Calibrator(ctk.CTkToplevel):
         proposals = dict(getattr(self, "_ai_pending", {}))
         evidence = dict(getattr(self, "_ai_evidence", {}))
         updated_keys: set[str] = set()
-        last_analyzed = None
         last_frame = None
         last_win = None
         error = None
@@ -2122,10 +2121,12 @@ class Calibrator(ctk.CTkToplevel):
                             time.sleep(0.2)
                     except GeminiCalibrationError as exc:
                         recording_state["error"] = str(exc)
+                        self._ai_dispatch_message(f"Local video recording failed: {exc}")
                     except Exception as exc:  # noqa: BLE001
                         recording_state["error"] = (
                             f"Local recording failed safely ({type(exc).__name__})."
                         )
+                        self._ai_dispatch_message(recording_state["error"])
                     finally:
                         try:
                             saved_path = recorder.close()
@@ -2192,8 +2193,6 @@ class Calibrator(ctk.CTkToplevel):
                         raise
                     requests_made += 1
                     last_request_at = time.monotonic()
-                    last_analyzed = masked.copy()
-                    accepted_now = 0
                     for proposal in result.get("proposals", []):
                         if self._ai_hits_mask(proposal, mask_bounds):
                             continue
@@ -2215,7 +2214,6 @@ class Calibrator(ctk.CTkToplevel):
                             updated_keys.add(key)
                             if explicit_retake:
                                 retake_key = None
-                        accepted_now += 1
                     summary = result["summary"][:125]
                     instruction = result["next_instruction"][:200]
                     self._ai_dispatch_message(
