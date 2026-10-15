@@ -2105,6 +2105,7 @@ class Calibrator(ctk.CTkToplevel):
                                     "Local recording stopped because the Roblox client window "
                                     "could no longer be identified."
                                 )
+                                self._ai_dispatch_message(recording_state["error"])
                                 break
                             rec_frame = record_screen.grab(rec_win)
                             rec_frame, _ = self._ai_mask_overlay(
@@ -2188,7 +2189,7 @@ class Calibrator(ctk.CTkToplevel):
                 self._ai_dispatch_message(
                     f"Capturing and analyzing still image {requests_made + 1}/{max_requests} "
                     f"with {active_provider}…\\n\\n"
-                    "Only this requested still is sent to the AI provider; local video recording continues separately."
+                    "Only this requested still and the bundled calibration references are sent to the AI provider; local video recording continues separately."
                 )
                 try:
                     previous_provider = active_provider
