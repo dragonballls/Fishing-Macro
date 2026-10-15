@@ -228,8 +228,8 @@ def should_analyze_frame(
     current_frame,
     *,
     elapsed_since_last_request: float,
-    min_request_interval: float = 8.0,
-    refresh_interval: float = 25.0,
+    min_request_interval: float = 15.0,
+    refresh_interval: float = 30.0,
     force: bool = False,
 ) -> bool:
     """Determine whether to analyze a frame automatically without button input.
