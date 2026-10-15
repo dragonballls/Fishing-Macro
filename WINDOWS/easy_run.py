@@ -91,7 +91,7 @@ from bloxfish.ai_calibration import (  # noqa: E402
     GeminiCalibrationError, PROVIDERS, PROVIDER_CONFIGS, ScreenVideoRecorder,
     analyze_screenshot_with_fallback, notice_x_position, capture_config_values,
     get_saved_api_key, restore_config_values, save_api_key,
-    should_replace_proposal,
+    should_analyze_frame, should_replace_proposal,
 )
 from bloxfish.engine import FishingEngine          # noqa: E402
 from bloxfish import vision                        # noqa: E402
@@ -1662,8 +1662,8 @@ class Calibrator(ctk.CTkToplevel):
 
         dialog = ctk.CTkToplevel(self)
         dialog.title("AI Auto-Calibrate")
-        dialog.geometry("590x700")
-        dialog.minsize(560, 670)
+        dialog.geometry("610x760")
+        dialog.minsize(570, 720)
         dialog.resizable(True, True)
         dialog.transient(self)
         dialog.attributes("-topmost", True)
@@ -1697,7 +1697,7 @@ class Calibrator(ctk.CTkToplevel):
         record_video_var = tk.BooleanVar(value=True)
         ctk.CTkCheckBox(
             shell,
-            text="Record the Roblox client locally while calibration runs",
+            text="Record Roblox locally and automatically analyze frames with AI",
             variable=record_video_var,
             text_color=TEXT,
             fg_color=ACCENT,
@@ -1706,8 +1706,9 @@ class Calibrator(ctk.CTkToplevel):
         ).pack(fill="x", padx=18, pady=(2, 2))
         ctk.CTkLabel(
             shell,
-            text="Saves a low-resource 5 FPS video to Videos\\FishingMacro. "
-                 "AI analysis is manual: press Capture current screen to send one still.",
+            text="Starts a local 5 FPS video and automatic AI analysis: the first frame, "
+                 "major screen changes, and periodic refresh frames are analyzed without "
+                 "button presses. Still frames use your provider quota; the video stays local.",
             text_color=MUTED, justify="left", anchor="w", wraplength=510,
             font=ctk.CTkFont(size=10),
         ).pack(fill="x", padx=18, pady=(0, 7))
@@ -1956,6 +1957,13 @@ class Calibrator(ctk.CTkToplevel):
             pass
 
     def _ai_request_capture(self) -> None:
+        if self._ai_running and getattr(self, "_ai_analysis_paused", False):
+            self._ai_toast_message(
+                "Automatic AI analysis is paused after a provider error or session safeguard. "
+                "The local video keeps recording; stop and review or restart AI calibration "
+                "after checking the provider key and quota."
+            )
+            return
         if self._ai_running:
             self._ai_force_event.set()
             self._ai_toast_message(
@@ -1996,6 +2004,7 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_provider = provider
         self._ai_record_video = bool(record_video)
         self._ai_recording_path = None
+        self._ai_analysis_paused = False
         self._ai_stop_event = threading.Event()
         self._ai_force_event = threading.Event()
         self._ai_running = True
@@ -2006,11 +2015,12 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_last_win = None
         self._ai_make_toast()
         self._ai_toast_message(
-            f"{provider} calibration is starting. A local video recording is "
-            f"{'ON' if self._ai_record_video else 'OFF'}; it is never uploaded. "
-            "AI screenshot analysis runs only when you press Capture current screen, "
-            "so screen changes will not silently trigger more API calls. "
-            "Nothing is saved to calibration until you review it and press Save calibration."
+            f"{provider} calibration is starting. Local video recording is "
+            f"{'ON' if self._ai_record_video else 'OFF'} and stays on this PC. "
+            "Automatic AI analysis is active: it inspects the initial frame, meaningful "
+            "screen changes, and periodic refresh frames without button presses. "
+            "Each still and the calibration references are sent to your chosen provider "
+            "and consume its quota. Only reviewed changes are saved to calibration."
         )
         try:
             self.master_app.withdraw()
@@ -2085,9 +2095,10 @@ class Calibrator(ctk.CTkToplevel):
         active_provider = provider
         active_model = model
         active_api_key = api_key
-        min_request_interval = 8.0
-        max_requests = 18
-        deadline = started + 12 * 60
+        min_request_interval = 15.0
+        auto_refresh_interval = 30.0
+        max_requests = 90
+        deadline = started + 60 * 60
         try:
             screen = Screen()
 
@@ -2115,7 +2126,7 @@ class Calibrator(ctk.CTkToplevel):
                                 recording_state["path"] = str(recorder.start(rec_frame))
                                 self._ai_dispatch_message(
                                     "Local Roblox video recording started. The file stays on "
-                                    "this PC; AI receives only stills you manually request."
+                                    "this PC; AI automatically receives sampled stills, not the video."
                                 )
                             else:
                                 recorder.write(rec_frame)
@@ -2147,102 +2158,155 @@ class Calibrator(ctk.CTkToplevel):
                 )
                 recorder_thread.start()
 
+            last_analyzed = None
             last_cooldown_notice = 0.0
+            ai_paused = False
+            self._ai_analysis_paused = False
+
             while not self._ai_stop_event.is_set():
                 now = time.monotonic()
                 if now >= deadline:
-                    error = "The 12-minute calibration session limit was reached. Review the suggestions collected so far, then start again if needed."
-                    break
-                if requests_made >= max_requests:
-                    error = f"The session used its limit of 18 {active_provider} analyses. Review the suggestions collected so far; nothing was saved automatically."
+                    error = (
+                        "The one-hour unattended recording safeguard was reached. "
+                        "The local video is being finalized safely."
+                    )
                     break
 
-                # Do not poll screenshots for AI. The separate local-video thread
-                # records continuously; this worker waits for an explicit capture.
-                if not self._ai_force_event.wait(timeout=0.25):
+                if requests_made >= max_requests and not ai_paused:
+                    ai_paused = True
+                    self._ai_analysis_paused = True
+                    error = (
+                        "Automatic AI analysis reached the 60-request session safeguard. "
+                        "Local recording continues until you stop the session or the "
+                        "one-hour recording limit is reached."
+                    )
+                    self._ai_dispatch_message(error)
+
+                if ai_paused:
+                    # Keep the independent recorder alive even when an API errors
+                    # or the request cap is reached; do not silently end recording.
+                    self._ai_stop_event.wait(timeout=0.5)
                     continue
 
-                now = time.monotonic()
-                elapsed = now - last_request_at
-                if elapsed < min_request_interval:
-                    wait = max(1, int(min_request_interval - elapsed))
-                    if now - last_cooldown_notice >= 1.0:
-                        self._ai_dispatch_message(
-                            f"Capture is queued. Keep the requested Roblox screen visible; "
-                            f"the next {active_provider} request can run in about {wait} seconds. "
-                            "The local video continues recording."
-                        )
-                        last_cooldown_notice = now
-                    time.sleep(min(0.5, max(0.05, min_request_interval - elapsed)))
-                    continue
-
-                self._ai_force_event.clear()
                 win, found = find_game_window(self.cfg.window_title, screen)
                 if not found:
-                    error = "Roblox was not detected as a real client window. Open the Roblox client, keep it visible, and request a capture again. No full-screen fallback was uploaded."
+                    error = (
+                        "The Roblox client window could not be identified. "
+                        "No full-desktop capture was used; the local recording is "
+                        "being finalized if one was started."
+                    )
                     break
+
                 frame = screen.grab(win)
                 masked, mask_bounds = self._ai_mask_overlay(
                     frame, win, self._ai_overlay_rect
                 )
                 last_frame, last_win = masked.copy(), win
-                self._ai_dispatch_message(
-                    f"Capturing and analyzing still image {requests_made + 1}/{max_requests} "
-                    f"with {active_provider}…\\n\\n"
-                    "Only this requested still and the bundled calibration references are sent to the AI provider; local video recording continues separately."
+                now = time.monotonic()
+                elapsed = now - last_request_at
+                force = self._ai_force_event.is_set()
+                analyze_now = should_analyze_frame(
+                    last_analyzed,
+                    masked,
+                    elapsed_since_last_request=elapsed,
+                    min_request_interval=min_request_interval,
+                    refresh_interval=auto_refresh_interval,
+                    force=force,
                 )
-                try:
-                    previous_provider = active_provider
-                    result, active_provider, active_model, active_api_key = (
-                        analyze_screenshot_with_fallback(
-                            masked, active_api_key, ASSETS,
-                            timeout=35.0,
-                            provider=active_provider, model=active_model,
-                        )
+
+                if analyze_now:
+                    self._ai_force_event.clear()
+                    self._ai_dispatch_message(
+                        f"Automatic AI analysis {requests_made + 1}/{max_requests} "
+                        f"via {active_provider} is running.\\n\\n"
+                        "Local video recording continues independently. The provider receives "
+                        "a sampled still and the bundled calibration reference images, "
+                        "not the local video file."
                     )
-                    self._ai_provider = active_provider
+                    try:
+                        previous_provider = active_provider
+                        result, active_provider, active_model, active_api_key = (
+                            analyze_screenshot_with_fallback(
+                                masked, active_api_key, ASSETS,
+                                timeout=35.0,
+                                provider=active_provider, model=active_model,
+                            )
+                        )
+                        self._ai_provider = active_provider
+                    except GeminiCalibrationError as provider_error:
+                        ai_paused = True
+                        self._ai_analysis_paused = True
+                        error = (
+                            f"Automatic AI analysis paused after {active_provider} failed: "
+                            f"{provider_error}\\nLocal video recording continues. "
+                            "Check the selected provider's key/quota or save an OpenRouter "
+                            "key to enable the free-route quota fallback."
+                        )
+                        self._ai_dispatch_message(error)
+                        continue
+                    except Exception as provider_error:  # noqa: BLE001
+                        ai_paused = True
+                        self._ai_analysis_paused = True
+                        error = (
+                            f"Automatic AI analysis paused safely "
+                            f"({type(provider_error).__name__}). Local video recording "
+                            "continues; review the provider settings and try again."
+                        )
+                        self._ai_dispatch_message(error)
+                        continue
+
+                    requests_made += 1
+                    last_request_at = time.monotonic()
+                    last_analyzed = masked.copy()
                     if active_provider != previous_provider:
                         self._ai_dispatch_message(
                             f"{previous_provider} hit a quota/credit limit. "
                             "Continuing with your saved OpenRouter/free vision route. "
                             "No paid fallback provider was contacted."
                         )
-                except GeminiCalibrationError:
-                    raise
-                requests_made += 1
-                last_request_at = time.monotonic()
-                for proposal in result.get("proposals", []):
-                    if self._ai_hits_mask(proposal, mask_bounds):
-                        continue
-                    key = proposal["key"]
-                    previous = proposals.get(key)
-                    explicit_retake = retake_key == key
-                    if should_replace_proposal(
-                        previous, proposal, force_retake=explicit_retake
-                    ):
-                        proposals[key] = proposal
-                        evidence[key] = {
-                            "shot": PILImage.fromarray(masked[:, :, ::-1].copy()),
-                            "win": win,
-                            "found": True,
-                            "state": result["screen_state"],
-                            "confidence": proposal["confidence"],
-                            "evidence": proposal["evidence"],
-                        }
-                        updated_keys.add(key)
-                        if explicit_retake:
-                            retake_key = None
-                summary = result["summary"][:125]
-                instruction = result["next_instruction"][:200]
-                self._ai_dispatch_message(
-                    f"{summary}\\n\\nNEXT STEP\\n{instruction}\\n\\n"
-                    f"Reviewable targets found: {len(proposals)} unique "
-                    f"controls · analysis {requests_made}/{max_requests}. "
-                    "Local recording continues independently. Press Capture current screen "
-                    "after changing the visible game state to request another still analysis. "
-                    "Suggestions remain unsaved until you review and press Save calibration."
-                )
-                time.sleep(0.25)
+
+                    for proposal in result.get("proposals", []):
+                        if self._ai_hits_mask(proposal, mask_bounds):
+                            continue
+                        key = proposal["key"]
+                        previous = proposals.get(key)
+                        explicit_retake = retake_key == key
+                        if should_replace_proposal(
+                            previous, proposal, force_retake=explicit_retake
+                        ):
+                            proposals[key] = proposal
+                            evidence[key] = {
+                                "shot": PILImage.fromarray(masked[:, :, ::-1].copy()),
+                                "win": win,
+                                "found": True,
+                                "state": result["screen_state"],
+                                "confidence": proposal["confidence"],
+                                "evidence": proposal["evidence"],
+                            }
+                            updated_keys.add(key)
+                            if explicit_retake:
+                                retake_key = None
+
+                    summary = result["summary"][:125]
+                    instruction = result["next_instruction"][:200]
+                    self._ai_dispatch_message(
+                        f"{summary}\\n\\nNEXT STEP\\n{instruction}\\n\\n"
+                        f"Reviewable targets found: {len(proposals)} unique controls · "
+                        f"automatic AI analyses {requests_made}/{max_requests}. "
+                        "AI will keep sampling meaningful changes and refresh frames "
+                        "automatically. Video remains local; suggestions stay provisional "
+                        "until you review and press Save calibration."
+                    )
+                elif force and elapsed < min_request_interval:
+                    wait = max(1, int(min_request_interval - elapsed))
+                    if now - last_cooldown_notice >= 1.0:
+                        self._ai_dispatch_message(
+                            f"Automatic analysis is running. Manual capture can run in "
+                            f"about {wait} seconds; the local recording continues."
+                        )
+                        last_cooldown_notice = now
+
+                time.sleep(0.65)
         except GeminiCalibrationError as exc:
             error = str(exc)
         except Exception as exc:  # noqa: BLE001

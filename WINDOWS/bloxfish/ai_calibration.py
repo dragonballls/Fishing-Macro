@@ -223,6 +223,41 @@ def screen_changed(first_bgr, second_bgr) -> bool:
     return (mean_diff >= 7.0 and changed_fraction >= 0.02) or changed_fraction >= 0.09
 
 
+def should_analyze_frame(
+    previous_frame,
+    current_frame,
+    *,
+    elapsed_since_last_request: float,
+    min_request_interval: float = 15.0,
+    refresh_interval: float = 30.0,
+    force: bool = False,
+) -> bool:
+    """Determine whether to analyze a frame automatically without button input.
+
+    The first visible frame is analyzed immediately. Later calls are throttled,
+    then triggered by meaningful scene changes or a periodic refresh. The force
+    flag remains an optional manual override and does not disable automatic mode.
+    """
+    try:
+        elapsed = max(0.0, float(elapsed_since_last_request))
+        minimum = max(0.0, float(min_request_interval))
+        refresh = max(minimum, float(refresh_interval))
+    except (TypeError, ValueError):
+        return False
+    if elapsed < minimum:
+        return False
+    if force or previous_frame is None:
+        return True
+    if elapsed >= refresh:
+        return True
+    try:
+        return screen_changed(previous_frame, current_frame)
+    except GeminiCalibrationError:
+        # A malformed/temporarily unavailable frame should not crash the
+        # recording loop; the next valid sample can be analyzed.
+        return False
+
+
 def should_replace_proposal(
     existing: Mapping[str, Any] | None,
     candidate: Mapping[str, Any],

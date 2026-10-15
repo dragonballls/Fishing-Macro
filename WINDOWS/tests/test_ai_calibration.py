@@ -20,6 +20,7 @@ from bloxfish.ai_calibration import (  # noqa: E402
     analyze_screenshot_with_fallback,
     is_quota_or_credit_error,
     screen_changed,
+    should_analyze_frame,
     should_replace_proposal,
     validate_response,
 )
@@ -291,6 +292,62 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
 
 
 
+
+
+class AutomaticAnalysisSchedulingTests(unittest.TestCase):
+    def test_first_visible_frame_is_analyzed_without_button_input(self):
+        self.assertTrue(should_analyze_frame(
+            None, object(), elapsed_since_last_request=100.0
+        ))
+
+    def test_cooldown_limits_even_manual_override(self):
+        self.assertFalse(should_analyze_frame(
+            None, object(), elapsed_since_last_request=3.0,
+            min_request_interval=15.0, force=True,
+        ))
+
+    @unittest.skipUnless(
+        __import__("importlib").util.find_spec("numpy") and
+        __import__("importlib").util.find_spec("cv2"),
+        "requires OpenCV and NumPy",
+    )
+    def test_periodic_refresh_analyzes_a_steady_scene_automatically(self):
+        import numpy as np
+        frame = np.zeros((120, 200, 3), dtype=np.uint8)
+        self.assertTrue(should_analyze_frame(
+            frame, frame.copy(), elapsed_since_last_request=30.0,
+            min_request_interval=15.0, refresh_interval=30.0,
+        ))
+
+    @unittest.skipUnless(
+        __import__("importlib").util.find_spec("numpy") and
+        __import__("importlib").util.find_spec("cv2"),
+        "requires OpenCV and NumPy",
+    )
+    def test_meaningful_screen_change_triggers_automatic_analysis(self):
+        import numpy as np
+        first = np.zeros((120, 200, 3), dtype=np.uint8)
+        second = first.copy()
+        second[20:100, 30:175, :] = 255
+        self.assertTrue(should_analyze_frame(
+            first, second, elapsed_since_last_request=18.0,
+            min_request_interval=15.0, refresh_interval=30.0,
+        ))
+
+    @unittest.skipUnless(
+        __import__("importlib").util.find_spec("numpy") and
+        __import__("importlib").util.find_spec("cv2"),
+        "requires OpenCV and NumPy",
+    )
+    def test_unchanged_scene_waits_until_periodic_refresh(self):
+        import numpy as np
+        frame = np.zeros((120, 200, 3), dtype=np.uint8)
+        self.assertFalse(should_analyze_frame(
+            frame, frame.copy(), elapsed_since_last_request=20.0,
+            min_request_interval=15.0, refresh_interval=30.0,
+        ))
+
+
 class ProviderFallbackTests(unittest.TestCase):
     def test_quota_error_uses_only_a_saved_openrouter_free_route(self):
         successful = {
@@ -426,6 +483,40 @@ class LocalVideoRecorderTests(unittest.TestCase):
         self.assertGreaterEqual(created["writer"].write_count, 2)
         self.assertTrue(created["writer"].released)
         self.assertIsNone(recorder._writer)
+
+
+    @unittest.skipUnless(
+        __import__("importlib").util.find_spec("numpy") and
+        __import__("importlib").util.find_spec("cv2"),
+        "requires OpenCV and NumPy",
+    )
+    def test_real_encoder_produces_a_readable_local_recording(self):
+        import tempfile
+        from pathlib import Path
+        import cv2
+        import numpy as np
+
+        frame = np.zeros((96, 160, 3), dtype=np.uint8)
+        frame[20:70, 30:130, :] = 220
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = ScreenVideoRecorder(output_dir=tmp, fps=5.0)
+            path = recorder.start(frame)
+            for _ in range(4):
+                recorder.write(frame)
+            finalized = recorder.close()
+
+            self.assertEqual(finalized, path)
+            self.assertTrue(Path(path).is_file())
+            self.assertGreater(Path(path).stat().st_size, 0)
+
+            capture = cv2.VideoCapture(str(path))
+            try:
+                self.assertTrue(capture.isOpened(), "recorded file did not reopen")
+                ok, decoded = capture.read()
+                self.assertTrue(ok, "recorded file did not decode a frame")
+                self.assertEqual(tuple(decoded.shape[:2]), (96, 160))
+            finally:
+                capture.release()
 
 if __name__ == "__main__":
     unittest.main()

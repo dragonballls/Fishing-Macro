@@ -122,12 +122,16 @@ video. It writes only the game-client window, never the full desktop, and the
 video file stays on your PC and is never uploaded. The small guide notice remains
 inset from the top-right edge to avoid clipping on high-DPI displays.
 
-AI screenshot analysis is now **manual, not change-triggered**: live scene
-changes do not automatically make more cloud API calls. Follow the instruction
-in the guide, show the requested fishing/reel/NPC UI, and press **Capture current
-screen** when you want the AI to inspect one still image. Only that requested
-still and the bundled calibration reference sheet are sent to the selected
-provider. AI candidates appear as separate amber dashed overlays:
+AI image analysis now runs **automatically with no per-frame button presses**.
+The first visible frame is analyzed immediately, meaningful scene changes are
+analyzed after a 15-second request cooldown, and an unchanged view is refreshed
+every 30 seconds. The optional **Capture current screen** button remains as an
+immediate manual override, but normal operation needs no repeated input. Every
+AI call sends one sampled still plus the bundled calibration reference sheet;
+the local MP4/AVI recording is never uploaded. Each automatic request uses the
+selected provider's quota and may incur charges on paid providers, so check the
+provider's pricing and balance before starting. AI candidates appear as separate
+amber dashed overlays:
 existing indicator positions remain unchanged unless you explicitly choose
 **Use AI candidate for selected**. The saved config changes only when you press
 **Save calibration**. To recapture evidence for a candidate, select it and press
@@ -156,9 +160,12 @@ for review. **Nothing is written to `config.json` automatically.** Select each
 suggested control, check its reference image and alignment, correct anything
 that looks wrong, then click **Save calibration** yourself. If a provider fails
 or cannot confidently identify a visible target, the existing calibration remains
-unchanged for that target. The automatic session is bounded
-to 18 analyses or 12 minutes; use **Stop & review** to finish early. Manual
-calibration, Re-shoot, and existing F2/F4 controls continue to work as before.
+unchanged for that target. Automatic analysis is safeguarded at 90 successful requests per session
+or one hour. If the request cap is reached or the provider fails, AI analysis
+pauses with an explanation while local video recording continues until you stop
+the session or the one-hour safeguard finalizes the video. Use **Stop & review**
+to finish early. Manual calibration, Re-shoot, and existing F2/F4 controls
+continue to work as before.
 
 
 Every position the bot uses is stored as a *fraction* of the game window, so it
