@@ -114,32 +114,42 @@ credential continues to work. Gemini uses the existing
 `FishingMacro.GeminiAutoCalibration` / `gemini-api-key` entry; other providers
 have their own credential-store entries. Keys are never shared across providers.
 
-After you start, the app captures the actual Roblox client window in memory and
-compares it with the bundled calibration reference pictures. A small notice
-near the top-right, inset farther from the edge, tells you which game screen to
-show next. The live monitor samples the actual Roblox client window and submits fresh screenshots when meaningful screen changes are detected or when you press **Capture current screen**. Screenshots stay in memory; the app does not save video recordings. Follow the instruction; when the requested UI is visible, use
-**Capture current screen** to request an additional analysis. This is sequential,
-screen-guided calibration: hidden buttons cannot be safely located from a
-screenshot that does not show them, so the app asks you to open the matching
-fishing, reel, or NPC UI. AI candidates appear as separate amber dashed overlays:
+When you start calibration, the app identifies the Roblox client window only.
+The **Record the Roblox client locally** option is enabled by default; it saves a
+5 FPS video under **Videos/FishingMacro** while the session runs. The recording
+uses its own capture thread, so waiting for an AI response does not pause the
+video. It writes only the game-client window, never the full desktop, and the
+video file stays on your PC and is never uploaded. The small guide notice remains
+inset from the top-right edge to avoid clipping on high-DPI displays.
+
+AI screenshot analysis is now **manual, not change-triggered**: live scene
+changes do not automatically make more cloud API calls. Follow the instruction
+in the guide, show the requested fishing/reel/NPC UI, and press **Capture current
+screen** when you want the AI to inspect one still image. Only that requested
+still and the bundled calibration reference sheet are sent to the selected
+provider. AI candidates appear as separate amber dashed overlays:
 existing indicator positions remain unchanged unless you explicitly choose
 **Use AI candidate for selected**. The saved config changes only when you press
 **Save calibration**. To recapture evidence for a candidate, select it and press
 **Retake selected AI image**; a deliberate retake can replace that candidate while
 leaving its working saved placement alone. The live guide uses the notification window's measured dimensions and a larger
-right-edge safety margin to avoid clipping on high-DPI displays. If a provider
-returns a quota/credit error, the session stops with a clear message; it does
-not silently switch to another service or start local inference. Choose another
-cloud provider with its own valid API key and retry. Existing calibration is
-kept unchanged when an API request fails.
+right-edge safety margin to avoid clipping on high-DPI displays. If the selected
+provider reports a quota/credit error, the app automatically tries the **OpenRouter
+free vision route** only if you have already saved an OpenRouter API key in
+Windows Credential Manager. It never falls back automatically to a paid provider.
+If no OpenRouter key is saved, the guide tells you how to enable the fallback;
+existing calibration stays unchanged when an API request fails. The selected
+provider's key and the OpenRouter fallback key remain separate.
 
 The app refuses to upload a full-monitor fallback if it cannot identify the
-Roblox client, masks its own notification area before image analysis, filters suggestions below the 68% review floor, rejects invalid coordinates, and ignores proposals that overlap the
-masked area. Screenshots are not written to disk by this feature. Cloud
-providers receive the game-window screenshot and bundled calibration reference
-sheet, so review the selected provider's data handling, usage limits and billing
-rules. Only the selected cloud provider receives these images. Keep cloud API
-keys private.
+Roblox client, masks its own notification area before AI analysis, filters
+suggestions below the 68% review floor, rejects invalid coordinates, and ignores
+proposals that overlap the masked area. Individual still-image payloads are not
+saved as files; the optional local video is the only recording written to disk.
+Normally the selected cloud provider receives the still and bundled calibration
+reference sheet. If a quota/credit error triggers the configured fallback, that
+still is retried through OpenRouter's `openrouter/free` route instead. Review
+the relevant provider's data handling and usage limits, and keep API keys private.
 
 AI-suggested boxes and click points are only placed on the calibration canvas
 for review. **Nothing is written to `config.json` automatically.** Select each

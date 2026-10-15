@@ -15,7 +15,9 @@ from bloxfish.ai_calibration import (  # noqa: E402
     PROVIDERS,
     notice_x_position,
     GeminiCalibrationError,
+    ScreenVideoRecorder,
     analyze_screenshot,
+    analyze_screenshot_with_fallback,
     is_quota_or_credit_error,
     screen_changed,
     should_replace_proposal,
@@ -34,7 +36,7 @@ class ProviderConfigurationTests(unittest.TestCase):
         expected = {
             "Gemini": "gemini-3.8-flash",
             "OpenRouter": "openrouter/free",
-            "Groq": "qwen/qwen3.6-27b",
+            "Groq": "qwen/qwen3.8-27b",
             "OpenAI": "gpt-4.1-mini",
             "Mistral": "ministral-14b-2512",
         }
@@ -286,6 +288,144 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
         self.assertFalse(is_quota_or_credit_error(
             GeminiCalibrationError("The model does not support vision.")
         ))
+
+
+
+class ProviderFallbackTests(unittest.TestCase):
+    def test_quota_error_uses_only_a_saved_openrouter_free_route(self):
+        successful = {
+            "screen_state": "reel_minigame",
+            "summary": "Reel visible",
+            "next_instruction": "Review",
+            "proposals": [],
+        }
+        with mock.patch(
+            "bloxfish.ai_calibration.analyze_screenshot",
+            side_effect=[
+                GeminiCalibrationError("Gemini rate limit or quota is exhausted."),
+                successful,
+            ],
+        ) as analyze, mock.patch(
+            "bloxfish.ai_calibration.get_saved_api_key",
+            return_value="saved-openrouter-test-key",
+        ) as key_lookup:
+            result, provider, model, api_key = analyze_screenshot_with_fallback(
+                object(), "primary-test-key", WINDOWS / "assets" / "gui",
+                provider="Gemini",
+            )
+        self.assertEqual(result, successful)
+        self.assertEqual(provider, "OpenRouter")
+        self.assertEqual(model, "openrouter/free")
+        self.assertEqual(api_key, "saved-openrouter-test-key")
+        key_lookup.assert_called_once_with("OpenRouter")
+        self.assertEqual(analyze.call_count, 2)
+        self.assertEqual(analyze.call_args.kwargs["provider"], "OpenRouter")
+        self.assertEqual(analyze.call_args.kwargs["model"], "openrouter/free")
+
+    def test_quota_error_without_saved_openrouter_key_is_actionable(self):
+        with mock.patch(
+            "bloxfish.ai_calibration.analyze_screenshot",
+            side_effect=GeminiCalibrationError("Gemini quota exceeded."),
+        ) as analyze, mock.patch(
+            "bloxfish.ai_calibration.get_saved_api_key",
+            return_value=None,
+        ):
+            with self.assertRaisesRegex(
+                GeminiCalibrationError, "No saved OpenRouter API key was found"
+            ):
+                analyze_screenshot_with_fallback(
+                    object(), "primary-test-key", WINDOWS / "assets" / "gui",
+                    provider="Gemini",
+                )
+        analyze.assert_called_once()
+
+    def test_non_quota_provider_errors_do_not_trigger_fallback(self):
+        with mock.patch(
+            "bloxfish.ai_calibration.analyze_screenshot",
+            side_effect=GeminiCalibrationError("The model does not support vision."),
+        ) as analyze, mock.patch(
+            "bloxfish.ai_calibration.get_saved_api_key"
+        ) as key_lookup:
+            with self.assertRaisesRegex(GeminiCalibrationError, "does not support vision"):
+                analyze_screenshot_with_fallback(
+                    object(), "primary-test-key", WINDOWS / "assets" / "gui",
+                    provider="Gemini",
+                )
+        analyze.assert_called_once()
+        key_lookup.assert_not_called()
+
+    def test_openrouter_quota_does_not_retry_or_use_paid_provider(self):
+        with mock.patch(
+            "bloxfish.ai_calibration.analyze_screenshot",
+            side_effect=GeminiCalibrationError("OpenRouter quota exhausted."),
+        ) as analyze, mock.patch(
+            "bloxfish.ai_calibration.get_saved_api_key"
+        ) as key_lookup:
+            with self.assertRaisesRegex(GeminiCalibrationError, "No paid provider"):
+                analyze_screenshot_with_fallback(
+                    object(), "openrouter-test-key", WINDOWS / "assets" / "gui",
+                    provider="OpenRouter",
+                )
+        analyze.assert_called_once()
+        key_lookup.assert_not_called()
+
+
+class LocalVideoRecorderTests(unittest.TestCase):
+    @unittest.skipUnless(
+        __import__("importlib").util.find_spec("numpy") and
+        __import__("importlib").util.find_spec("cv2"),
+        "requires OpenCV and NumPy",
+    )
+    def test_recorder_writes_local_video_and_releases_writer(self):
+        import tempfile
+        from pathlib import Path
+        import numpy as np
+
+        created = {}
+
+        class FakeWriter:
+            def __init__(self, path):
+                self.path = Path(path)
+                self.path.write_bytes(b"video-test")
+                self.write_count = 0
+                self.released = False
+
+            def isOpened(self):
+                return True
+
+            def write(self, frame):
+                self.write_count += 1
+
+            def release(self):
+                self.released = True
+
+        def writer_factory(path, fourcc, fps, size):
+            created["writer"] = FakeWriter(path)
+            created["fps"] = fps
+            created["size"] = size
+            return created["writer"]
+
+        frame = np.zeros((90, 160, 3), dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "cv2.VideoWriter", side_effect=writer_factory
+        ):
+            recorder = ScreenVideoRecorder(output_dir=tmp, fps=5.0)
+            path = recorder.start(frame)
+            recorder.write(frame)
+            finalized = recorder.close()
+            file_exists_before_cleanup = Path(path).is_file()
+            path_parent = Path(path).parent
+            path_suffix = Path(path).suffix
+
+        self.assertEqual(finalized, path)
+        self.assertTrue(file_exists_before_cleanup)
+        self.assertEqual(path_parent, Path(tmp))
+        self.assertEqual(path_suffix, ".mp4")
+        self.assertEqual(created["fps"], 5.0)
+        self.assertEqual(created["size"], (160, 90))
+        self.assertGreaterEqual(created["writer"].write_count, 2)
+        self.assertTrue(created["writer"].released)
+        self.assertIsNone(recorder._writer)
 
 if __name__ == "__main__":
     unittest.main()
