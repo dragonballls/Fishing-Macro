@@ -331,7 +331,7 @@ class ProviderFallbackTests(unittest.TestCase):
             return_value=None,
         ):
             with self.assertRaisesRegex(
-                GeminiCalibrationError, "needs a saved OpenRouter API key"
+                GeminiCalibrationError, "No saved OpenRouter API key was found"
             ):
                 analyze_screenshot_with_fallback(
                     object(), "primary-test-key", WINDOWS / "assets" / "gui",
