@@ -11,10 +11,9 @@ sys.path.insert(0, str(WINDOWS))
 
 from bloxfish.ai_calibration import (  # noqa: E402
     API_URL,
-    LOCAL_ENDPOINT,
-    LOCAL_MODEL,
-    LOCAL_PROVIDER,
     PROVIDER_CONFIGS,
+    PROVIDERS,
+    notice_x_position,
     GeminiCalibrationError,
     analyze_screenshot,
     is_quota_or_credit_error,
@@ -22,6 +21,32 @@ from bloxfish.ai_calibration import (  # noqa: E402
     should_replace_proposal,
     validate_response,
 )
+
+
+class ProviderConfigurationTests(unittest.TestCase):
+    def test_only_supported_cloud_vision_providers_are_offered(self):
+        self.assertEqual(
+            set(PROVIDERS), {"Gemini", "OpenRouter", "Groq", "OpenAI", "Mistral"}
+        )
+        self.assertNotIn("Local LLM (Ollama)", PROVIDER_CONFIGS)
+
+    def test_default_models_use_documented_image_capable_endpoints(self):
+        expected = {
+            "Gemini": "gemini-3.8-flash",
+            "OpenRouter": "openrouter/free",
+            "Groq": "qwen/qwen3.6-27b",
+            "OpenAI": "gpt-4.1-mini",
+            "Mistral": "ministral-14b-2512",
+        }
+        self.assertEqual(
+            {name: PROVIDER_CONFIGS[name]["model"] for name in expected}, expected
+        )
+
+    def test_notice_position_keeps_right_edge_visible_with_safe_inset(self):
+        self.assertEqual(notice_x_position(1920, 380, right_inset=48), 1492)
+        x = notice_x_position(400, 320, right_inset=48)
+        self.assertEqual(x, 32)
+        self.assertEqual(400 - (x + 320), 48)
 
 
 class ConfigPreviewRollbackTests(unittest.TestCase):
@@ -235,13 +260,13 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=fake_response) as opened:
             result = analyze_screenshot(
                 frame, "groq-test-key-not-real", WINDOWS / "assets" / "gui",
-                provider="Groq", model="qwen/qwen3.6-27b",
+                provider="Groq",
             )
         request = opened.call_args.args[0]
         self.assertEqual(request.full_url, PROVIDER_CONFIGS["Groq"]["endpoint"])
         self.assertEqual(request.get_header("Authorization"), "Bearer groq-test-key-not-real")
         body_sent = json.loads(request.data.decode("utf-8"))
-        self.assertEqual(body_sent["model"], "qwen/qwen3.6-27b")
+        self.assertEqual(body_sent["model"], PROVIDER_CONFIGS["Groq"]["model"])
         self.assertEqual(body_sent["response_format"], {"type": "json_object"})
         contents = body_sent["messages"][0]["content"]
         self.assertEqual(contents[0]["type"], "text")
@@ -251,43 +276,7 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
         self.assertEqual(result["proposals"][0]["key"], "bar_search")
 
 
-    @unittest.skipUnless(__import__("importlib").util.find_spec("PIL") and
-                         __import__("importlib").util.find_spec("numpy"),
-                         "requires Pillow and NumPy")
-    def test_local_ollama_vision_provider_needs_no_api_key(self):
-        import numpy as np
-        answer = {
-            "screen_state": "reel_minigame",
-            "summary": "The reel track is visible.",
-            "next_instruction": "Open the next UI state.",
-            "regions": [{
-                "key": "bar_search", "kind": "box",
-                "coords": [35, 380, 965, 950],
-                "confidence": 0.96, "evidence": "Full reel track is visible",
-            }],
-        }
-        body = json.dumps({
-            "choices": [{"message": {"content": json.dumps(answer)}}]
-        }).encode("utf-8")
-        fake_response = mock.MagicMock()
-        fake_response.__enter__.return_value.read.return_value = body
-        frame = np.zeros((480, 800, 3), dtype=np.uint8)
-        with mock.patch("urllib.request.urlopen", return_value=fake_response) as opened:
-            result = analyze_screenshot(
-                frame, "", WINDOWS / "assets" / "gui",
-                provider=LOCAL_PROVIDER, model=LOCAL_MODEL,
-            )
-        request = opened.call_args.args[0]
-        self.assertEqual(request.full_url, LOCAL_ENDPOINT)
-        self.assertIsNone(request.get_header("Authorization"))
-        request_body = json.loads(request.data.decode("utf-8"))
-        self.assertEqual(request_body["model"], LOCAL_MODEL)
-        images = [part for part in request_body["messages"][0]["content"]
-                  if part.get("type") == "image_url"]
-        self.assertGreaterEqual(len(images), 1)
-        self.assertEqual(result["proposals"][0]["key"], "bar_search")
-
-    def test_quota_failures_are_detected_for_local_fallback(self):
+    def test_quota_failures_are_detected(self):
         self.assertTrue(is_quota_or_credit_error(
             GeminiCalibrationError("OpenRouter rate limit or quota is exhausted.")
         ))

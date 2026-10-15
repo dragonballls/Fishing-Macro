@@ -88,8 +88,7 @@ except ImportError:                                # noqa: BLE001
 
 from bloxfish.config import Config, COOLDOWNS, VERSION  # noqa: E402
 from bloxfish.ai_calibration import (  # noqa: E402
-    GeminiCalibrationError, LOCAL_DOWNLOAD_URL, LOCAL_MODEL, LOCAL_MODEL_URL,
-    LOCAL_PROVIDER, PROVIDERS, PROVIDER_CONFIGS, analyze_screenshot,
+    GeminiCalibrationError, PROVIDERS, PROVIDER_CONFIGS, analyze_screenshot, notice_x_position,
     capture_config_values, get_saved_api_key, is_quota_or_credit_error,
     restore_config_values, save_api_key, screen_changed,
     should_replace_proposal,
@@ -1751,30 +1750,6 @@ class Calibrator(ctk.CTkToplevel):
             key_entry.configure(state="normal", show="*", placeholder_text="Paste API key for selected provider")
             key_entry.delete(0, "end")
             error_label.configure(text="")
-            if name == LOCAL_PROVIDER:
-                key_holder["key"] = None
-                key_label.configure(text="API KEY · NOT NEEDED FOR LOCAL LLM")
-                key_entry.configure(
-                    state="disabled", show="", placeholder_text="Ollama does not use an API key"
-                )
-                saved_note.configure(
-                    text=("Runs on this PC without API charges. Install Ollama and download "
-                          f"the vision model first: ollama pull {LOCAL_MODEL} (about 3.2 GB). "
-                          "It can use substantial RAM/VRAM while Roblox is open."),
-                    text_color=WARNING,
-                )
-                saved_button.configure(text="Start local LLM", state="normal")
-                save_button.configure(
-                    text="Model guide",
-                    command=lambda: __import__("webbrowser").open(LOCAL_MODEL_URL),
-                )
-                get_button.configure(
-                    text="Install Ollama",
-                    command=lambda: __import__("webbrowser").open(LOCAL_DOWNLOAD_URL),
-                    state="normal",
-                )
-                return
-
             key_label.configure(text="API KEY")
             saved_button.configure(text="Use saved key & start")
             save_button.configure(text="Save key & start", command=save_and_start)
@@ -1804,7 +1779,7 @@ class Calibrator(ctk.CTkToplevel):
         def start_with(key: str | None) -> None:
             provider = provider_var.get()
             model = model_entry.get().strip() or PROVIDER_CONFIGS[provider]["model"]
-            if provider != LOCAL_PROVIDER and not key:
+            if not key:
                 error_label.configure(text=f"Enter a {provider} API key or choose Use saved key.")
                 return
             if not model:
@@ -1819,9 +1794,6 @@ class Calibrator(ctk.CTkToplevel):
 
         def save_and_start() -> None:
             provider = provider_var.get()
-            if provider == LOCAL_PROVIDER:
-                start_with(None)
-                return
             candidate = key_entry.get().strip()
             if not candidate:
                 error_label.configure(text=f"Enter a {provider} API key first.")
@@ -1869,7 +1841,8 @@ class Calibrator(ctk.CTkToplevel):
         toast.overrideredirect(True)
         toast.attributes("-topmost", True)
         toast.configure(fg_color=APP_BG)
-        toast.geometry("420x292")
+        toast.geometry("380x276")
+        toast.resizable(False, False)
         outer = ctk.CTkFrame(toast, fg_color=BG_CARD, corner_radius=16,
                              border_width=1, border_color="#2878a8")
         outer.pack(fill="both", expand=True, padx=2, pady=2)
@@ -1881,7 +1854,7 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_toast_title.pack(anchor="w", padx=14, pady=(12, 3))
         self._ai_toast_label = ctk.CTkLabel(
             outer, text="Live monitor starting: sampling the Roblox client window…", text_color=TEXT,
-            justify="left", anchor="nw", wraplength=382,
+            justify="left", anchor="nw", wraplength=340,
             font=ctk.CTkFont(size=11),
         )
         self._ai_toast_label.pack(fill="both", expand=True, padx=14, pady=(2, 8))
@@ -1900,12 +1873,27 @@ class Calibrator(ctk.CTkToplevel):
         )
         self._ai_stop_button.pack(side="right")
         toast.update_idletasks()
-        # Pin the notice to the actual top-right screen corner with a small
-        # inset: the previous 88 px gap made it look stranded far from the edge.
-        screen_width = max(280, int(toast.winfo_screenwidth()))
-        width, height = min(420, screen_width - 24), 292
-        x, y = max(12, screen_width - width - 12), 12
-        toast.geometry(f"{width}x{height}+{x}+{y}")
+        # Position using the mapped window's actual dimensions rather than
+        # requested geometry: Windows DPI scaling can make those differ.
+        screen_width = max(320, int(toast.winfo_screenwidth()))
+        screen_height = max(240, int(toast.winfo_screenheight()))
+        width = min(380, max(300, screen_width - 72))
+        height = min(276, max(220, screen_height - 40))
+        toast.geometry(f"{width}x{height}+8+16")
+        toast.update_idletasks()
+        actual_width = max(1, int(toast.winfo_width()))
+        actual_height = max(1, int(toast.winfo_height()))
+        x = notice_x_position(screen_width, actual_width, right_inset=48, left_inset=8)
+        y = max(8, min(16, screen_height - actual_height - 8))
+        toast.geometry(f"+{x}+{y}")
+        toast.update_idletasks()
+        # Re-check after Tk applies geometry and use the final bounds to mask
+        # the notice out of screenshots submitted for analysis.
+        actual_width = max(1, int(toast.winfo_width()))
+        actual_height = max(1, int(toast.winfo_height()))
+        x = notice_x_position(screen_width, actual_width, right_inset=48, left_inset=8)
+        y = max(8, min(y, screen_height - actual_height - 8))
+        toast.geometry(f"+{x}+{y}")
         toast.update_idletasks()
         self._ai_toast = toast
         self._ai_overlay_rect = (
@@ -1974,7 +1962,7 @@ class Calibrator(ctk.CTkToplevel):
             return
         if provider not in PROVIDER_CONFIGS:
             raise GeminiCalibrationError("Choose a supported AI provider.")
-        if provider != LOCAL_PROVIDER and not (api_key or "").strip():
+        if not (api_key or "").strip():
             raise GeminiCalibrationError(f"No {provider} API key was provided.")
         api_key = api_key or ""
         model = (model or "").strip() or PROVIDER_CONFIGS[provider]["model"]
@@ -2069,7 +2057,7 @@ class Calibrator(ctk.CTkToplevel):
         active_provider = provider
         active_model = model
         active_api_key = api_key
-        min_request_interval = 1.0 if provider == LOCAL_PROVIDER else 8.0
+        min_request_interval = 8.0
         max_requests = 18
         deadline = started + 12 * 60
         try:
@@ -2103,35 +2091,17 @@ class Calibrator(ctk.CTkToplevel):
                     try:
                         result = analyze_screenshot(
                             masked, active_api_key, ASSETS,
-                            timeout=75.0 if active_provider == LOCAL_PROVIDER else 35.0,
+                            timeout=35.0,
                             provider=active_provider, model=active_model,
                         )
                     except GeminiCalibrationError as provider_error:
-                        if active_provider == LOCAL_PROVIDER or not is_quota_or_credit_error(provider_error):
-                            raise
-                        self._ai_dispatch_message(
-                            f"{active_provider} quota/credits are exhausted. Trying the local vision LLM…\n\n"
-                            "Local inference uses no API credits. It needs Ollama and the qwen2.5vl:3b model."
-                        )
-                        try:
-                            result = analyze_screenshot(
-                                masked, "", ASSETS, timeout=75.0,
-                                provider=LOCAL_PROVIDER, model=LOCAL_MODEL,
-                            )
-                        except GeminiCalibrationError as local_error:
+                        if is_quota_or_credit_error(provider_error):
                             raise GeminiCalibrationError(
-                                f"{provider_error}\n\nAutomatic local fallback could not start: {local_error}\n\n"
-                                f"To enable it, install Ollama from {LOCAL_DOWNLOAD_URL}, then run "
-                                f"ollama pull {LOCAL_MODEL} (model download is about 3.2 GB)."
-                            ) from local_error
-                        active_provider = LOCAL_PROVIDER
-                        active_model = LOCAL_MODEL
-                        active_api_key = ""
-                        min_request_interval = 1.0
-                        self._ai_provider = LOCAL_PROVIDER
-                        self._ai_dispatch_message(
-                            "Continuing with the local vision LLM. API credits will not be used for the remaining screenshots."
-                        )
+                                f"{provider_error}\n\n"
+                                "No local fallback is enabled. Select a different cloud provider "
+                                "with its own valid API key, then retry. No calibration was saved or changed."
+                            ) from provider_error
+                        raise
                     requests_made += 1
                     last_request_at = time.monotonic()
                     last_analyzed = masked.copy()

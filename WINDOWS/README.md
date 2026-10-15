@@ -101,12 +101,12 @@ If the main hotkeys do not work, the window has buttons that do the same thing
 ### Multi-provider vision-assisted automatic calibration
 
 The calibration window includes **AI Auto-Calibrate** with selectable vision
-providers: **OpenRouter, Groq, OpenAI, Mistral, Gemini, and Local LLM (Ollama)**.
+providers: **OpenRouter, Groq, OpenAI, Mistral, and Gemini**.
 OpenRouter defaults to its openrouter/free router, which selects an available
 model compatible with image input. Free routes still have usage limits and
 availability can change. Each cloud provider has a **Get key** shortcut and an
-editable model ID. The local option uses a vision model on this PC and does
-not consume API credits; it requires Ollama and a model download.
+editable model ID. Every provider requires its own API key and may require
+available quota or billing on its provider account.
 
 Each provider's API key is stored separately in the operating-system credential
 store, not in `config.json`, the repository, or logs. The original Gemini
@@ -126,22 +126,20 @@ existing indicator positions remain unchanged unless you explicitly choose
 **Use AI candidate for selected**. The saved config changes only when you press
 **Save calibration**. To recapture evidence for a candidate, select it and press
 **Retake selected AI image**; a deliberate retake can replace that candidate while
-leaving its working saved placement alone. The live guide sits in the screen's
-top-right corner with a small inset. If a cloud provider returns a quota/credit error, the
-app automatically tries the local vision model for this and subsequent steps.
-The local fallback needs Ollama plus qwen2.5vl:3b; install Ollama from
-https://ollama.com/download, then run "ollama pull qwen2.5vl:3b" once. The
-model download is about 3.2 GB, and local inference can use substantial RAM/VRAM
-while Roblox is open. The fallback does not run unless the cloud request reports
-a quota/credit error.
+leaving its working saved placement alone. The live guide uses the notification window's measured dimensions and a larger
+right-edge safety margin to avoid clipping on high-DPI displays. If a provider
+returns a quota/credit error, the session stops with a clear message; it does
+not silently switch to another service or start local inference. Choose another
+cloud provider with its own valid API key and retry. Existing calibration is
+kept unchanged when an API request fails.
 
 The app refuses to upload a full-monitor fallback if it cannot identify the
 Roblox client, masks its own notification area before image analysis, filters suggestions below the 68% review floor, rejects invalid coordinates, and ignores proposals that overlap the
 masked area. Screenshots are not written to disk by this feature. Cloud
 providers receive the game-window screenshot and bundled calibration reference
 sheet, so review the selected provider's data handling, usage limits and billing
-rules. With Local LLM (Ollama), both images are sent only to the local service
-at 127.0.0.1 instead. Keep cloud API keys private.
+rules. Only the selected cloud provider receives these images. Keep cloud API
+keys private.
 
 AI-suggested boxes and click points are only placed on the calibration canvas
 for review. **Nothing is written to `config.json` automatically.** Select each
