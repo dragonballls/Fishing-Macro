@@ -12,9 +12,9 @@ sys.path.insert(0, str(WINDOWS))
 from bloxfish.ai_calibration import (  # noqa: E402
     API_URL,
     LOCAL_ENDPOINT,
+    LOCAL_MODEL,
     LOCAL_PROVIDER,
     PROVIDER_CONFIGS,
-    discover_local_vision_models,
     GeminiCalibrationError,
     analyze_screenshot,
     is_quota_or_credit_error,
@@ -225,7 +225,7 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
     @unittest.skipUnless(__import__("importlib").util.find_spec("PIL") and
                          __import__("importlib").util.find_spec("numpy"),
                          "requires Pillow and NumPy")
-    def test_existing_local_vision_provider_needs_no_api_key(self):
+    def test_local_ollama_vision_provider_needs_no_api_key(self):
         import numpy as np
         answer = {
             "screen_state": "reel_minigame",
@@ -246,45 +246,17 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=fake_response) as opened:
             result = analyze_screenshot(
                 frame, "", WINDOWS / "assets" / "gui",
-                provider=LOCAL_PROVIDER,
-                model="Qwen/Qwen2.5-VL-7B-Instruct",
-                local_endpoint=LOCAL_ENDPOINT,
+                provider=LOCAL_PROVIDER, model=LOCAL_MODEL,
             )
         request = opened.call_args.args[0]
         self.assertEqual(request.full_url, LOCAL_ENDPOINT)
         self.assertIsNone(request.get_header("Authorization"))
         request_body = json.loads(request.data.decode("utf-8"))
-        self.assertEqual(request_body["model"], "Qwen/Qwen2.5-VL-7B-Instruct")
+        self.assertEqual(request_body["model"], LOCAL_MODEL)
         images = [part for part in request_body["messages"][0]["content"]
                   if part.get("type") == "image_url"]
         self.assertGreaterEqual(len(images), 1)
         self.assertEqual(result["proposals"][0]["key"], "bar_search")
-
-    def test_local_discovery_uses_only_already_running_loopback_vision_servers(self):
-        import urllib.error
-
-        listed = {"data": [
-            {"id": "Qwen/Qwen2.5-VL-7B-Instruct"},
-            {"id": "generic-text-instruct"},
-        ]}
-        fake_response = mock.MagicMock()
-        fake_response.__enter__.return_value.read.return_value = json.dumps(listed).encode("utf-8")
-
-        def fake_open(request, timeout=0.45):
-            if request.full_url == "http://127.0.0.1:1234/v1/models":
-                return fake_response
-            raise urllib.error.URLError("server is not running")
-
-        with mock.patch("urllib.request.urlopen", side_effect=fake_open) as opened:
-            models = discover_local_vision_models(timeout=0.01)
-
-        self.assertEqual(len(models), 1)
-        self.assertEqual(models[0]["model"], "Qwen/Qwen2.5-VL-7B-Instruct")
-        self.assertEqual(models[0]["server"], "LM Studio")
-        self.assertEqual(models[0]["endpoint"], LOCAL_ENDPOINT)
-        probed = [call.args[0].full_url for call in opened.call_args_list]
-        self.assertTrue(all(url.startswith("http://127.0.0.1:") for url in probed))
-        self.assertFalse(any("11434" in url or "ollama" in url.casefold() for url in probed))
 
     def test_quota_failures_are_detected_for_local_fallback(self):
         self.assertTrue(is_quota_or_credit_error(
