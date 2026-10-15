@@ -256,8 +256,8 @@ class ScreenVideoRecorder:
     """Save an explicitly requested, local-only recording of the Roblox client.
 
     Only the selected game-window frames are written. The recording file is
-    never passed to an AI provider; calibration still sends individual,
-    change-triggered frames for analysis.
+    never passed to an AI provider; calibration sends an individual still only
+    when the user explicitly requests AI analysis.
     """
 
     def __init__(self, output_dir: str | Path | None = None, fps: float = 5.0) -> None:
@@ -285,16 +285,26 @@ class ScreenVideoRecorder:
             candidates = ((".mp4", "mp4v"), (".avi", "MJPG"))
             for extension, codec in candidates:
                 target = self.output_dir / (stem + extension)
-                writer = cv2.VideoWriter(
-                    str(target), cv2.VideoWriter_fourcc(*codec), self.fps, (width, height)
-                )
-                if writer.isOpened():
-                    self._writer = writer
-                    self.path = target
-                    self._size = (width, height)
-                    self.write(frame_bgr)
-                    return target
-                writer.release()
+                writer = None
+                try:
+                    writer = cv2.VideoWriter(
+                        str(target), cv2.VideoWriter_fourcc(*codec), self.fps, (width, height)
+                    )
+                    if writer.isOpened():
+                        self._writer = writer
+                        self.path = target
+                        self._size = (width, height)
+                        self.write(frame_bgr)
+                        return target
+                except Exception:  # noqa: BLE001
+                    # A codec may throw during initialization; try the AVI fallback.
+                    pass
+                finally:
+                    if writer is not None and writer is not self._writer:
+                        try:
+                            writer.release()
+                        except Exception:  # noqa: BLE001
+                            pass
         except GeminiCalibrationError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -686,14 +696,23 @@ def analyze_screenshot_with_fallback(
                 "No paid provider was contacted automatically; choose another provider "
                 "and its own key, or retry after the limit resets."
             ) from primary_error
+        key_store_error = None
         try:
             fallback_key = get_saved_api_key("OpenRouter")
-        except GeminiCalibrationError:
+        except GeminiCalibrationError as exc:
             fallback_key = None
+            key_store_error = exc
         if not fallback_key:
+            if key_store_error:
+                reason = (
+                    "Windows Credential Manager could not read the OpenRouter key: "
+                    f"{key_store_error}"
+                )
+            else:
+                reason = "No saved OpenRouter API key was found."
             raise GeminiCalibrationError(
-                f"{primary_error}\n\nAutomatic fallback needs a saved OpenRouter API key. "
-                "Choose OpenRouter and save its key once to enable quota fallback. "
+                f"{primary_error}\n\nAutomatic fallback is unavailable. {reason} "
+                "Open the OpenRouter provider, save its key once, and retry. "
                 "No paid provider will be contacted automatically."
             ) from primary_error
         try:
