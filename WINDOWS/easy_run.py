@@ -2146,6 +2146,7 @@ class Calibrator(ctk.CTkToplevel):
                 )
                 recorder_thread.start()
 
+            last_cooldown_notice = 0.0
             while not self._ai_stop_event.is_set():
                 now = time.monotonic()
                 if now >= deadline:
@@ -2154,84 +2155,93 @@ class Calibrator(ctk.CTkToplevel):
                 if requests_made >= max_requests:
                     error = f"The session used its limit of 18 {active_provider} analyses. Review the suggestions collected so far; nothing was saved automatically."
                     break
+
+                # Do not poll screenshots for AI. The separate local-video thread
+                # records continuously; this worker waits for an explicit capture.
+                if not self._ai_force_event.wait(timeout=0.25):
+                    continue
+
+                now = time.monotonic()
+                elapsed = now - last_request_at
+                if elapsed < min_request_interval:
+                    wait = max(1, int(min_request_interval - elapsed))
+                    if now - last_cooldown_notice >= 1.0:
+                        self._ai_dispatch_message(
+                            f"Capture is queued. Keep the requested Roblox screen visible; "
+                            f"the next {active_provider} request can run in about {wait} seconds. "
+                            "The local video continues recording."
+                        )
+                        last_cooldown_notice = now
+                    time.sleep(min(0.5, max(0.05, min_request_interval - elapsed)))
+                    continue
+
+                self._ai_force_event.clear()
                 win, found = find_game_window(self.cfg.window_title, screen)
                 if not found:
-                    error = "Roblox was not detected as a real client window. Open the Roblox client, keep it visible, and start Gemini Auto-Calibrate again. No full-screen fallback was uploaded."
+                    error = "Roblox was not detected as a real client window. Open the Roblox client, keep it visible, and request a capture again. No full-screen fallback was uploaded."
                     break
                 frame = screen.grab(win)
                 masked, mask_bounds = self._ai_mask_overlay(
                     frame, win, self._ai_overlay_rect
                 )
                 last_frame, last_win = masked.copy(), win
-                force = self._ai_force_event.is_set()
-                due = now - last_request_at >= min_request_interval
-                # Continuous capture is reserved for the local video writer.
-                # Only an explicit user action sends a still image to an AI API.
-                if due and force:
-                    self._ai_force_event.clear()
-                    self._ai_dispatch_message(
-                        f"Capturing and analyzing screenshot {requests_made + 1}/{max_requests} with {active_provider}…\n\n"
-                        "Keep Roblox visible and avoid dragging or resizing the game while the request runs."
-                    )
-                    try:
-                        previous_provider = active_provider
-                        result, active_provider, active_model, active_api_key = (
-                            analyze_screenshot_with_fallback(
-                                masked, active_api_key, ASSETS,
-                                timeout=35.0,
-                                provider=active_provider, model=active_model,
-                            )
+                self._ai_dispatch_message(
+                    f"Capturing and analyzing still image {requests_made + 1}/{max_requests} "
+                    f"with {active_provider}…\\n\\n"
+                    "Only this requested still is sent to the AI provider; local video recording continues separately."
+                )
+                try:
+                    previous_provider = active_provider
+                    result, active_provider, active_model, active_api_key = (
+                        analyze_screenshot_with_fallback(
+                            masked, active_api_key, ASSETS,
+                            timeout=35.0,
+                            provider=active_provider, model=active_model,
                         )
-                        self._ai_provider = active_provider
-                        if active_provider != previous_provider:
-                            self._ai_dispatch_message(
-                                f"{previous_provider} hit a quota/credit limit. "
-                                "Continuing with your saved OpenRouter/free vision route. "
-                                "No paid fallback provider was contacted."
-                            )
-                    except GeminiCalibrationError:
-                        raise
-                    requests_made += 1
-                    last_request_at = time.monotonic()
-                    for proposal in result.get("proposals", []):
-                        if self._ai_hits_mask(proposal, mask_bounds):
-                            continue
-                        key = proposal["key"]
-                        previous = proposals.get(key)
-                        explicit_retake = retake_key == key
-                        if should_replace_proposal(
-                            previous, proposal, force_retake=explicit_retake
-                        ):
-                            proposals[key] = proposal
-                            evidence[key] = {
-                                "shot": PILImage.fromarray(masked[:, :, ::-1].copy()),
-                                "win": win,
-                                "found": True,
-                                "state": result["screen_state"],
-                                "confidence": proposal["confidence"],
-                                "evidence": proposal["evidence"],
-                            }
-                            updated_keys.add(key)
-                            if explicit_retake:
-                                retake_key = None
-                    summary = result["summary"][:125]
-                    instruction = result["next_instruction"][:200]
-                    self._ai_dispatch_message(
-                        f"{summary}\n\nNEXT STEP\n{instruction}\n\n"
-                        f"Reviewable targets found: {len(proposals)} unique "
-                        f"controls · analysis {requests_made}/{max_requests}. "
-                        "Local recording, if enabled, continues independently. Press Capture current screen "
-                        "after changing the visible game state to request one still analysis. "
-                        "Suggestions remain unsaved until you review and press Save calibration."
                     )
-                elif force and not due:
-                    wait = max(1, int(min_request_interval - (now - last_request_at)))
-                    self._ai_dispatch_message(
-                        f"Capture is queued. Keep the requested Roblox screen visible; "
-                        f"the next {active_provider} request can run in about {wait} seconds.\n\n"
-                        f"Accepted controls so far: {len(proposals)}. Nothing is saved yet."
-                    )
-                time.sleep(0.65)
+                    self._ai_provider = active_provider
+                    if active_provider != previous_provider:
+                        self._ai_dispatch_message(
+                            f"{previous_provider} hit a quota/credit limit. "
+                            "Continuing with your saved OpenRouter/free vision route. "
+                            "No paid fallback provider was contacted."
+                        )
+                except GeminiCalibrationError:
+                    raise
+                requests_made += 1
+                last_request_at = time.monotonic()
+                for proposal in result.get("proposals", []):
+                    if self._ai_hits_mask(proposal, mask_bounds):
+                        continue
+                    key = proposal["key"]
+                    previous = proposals.get(key)
+                    explicit_retake = retake_key == key
+                    if should_replace_proposal(
+                        previous, proposal, force_retake=explicit_retake
+                    ):
+                        proposals[key] = proposal
+                        evidence[key] = {
+                            "shot": PILImage.fromarray(masked[:, :, ::-1].copy()),
+                            "win": win,
+                            "found": True,
+                            "state": result["screen_state"],
+                            "confidence": proposal["confidence"],
+                            "evidence": proposal["evidence"],
+                        }
+                        updated_keys.add(key)
+                        if explicit_retake:
+                            retake_key = None
+                summary = result["summary"][:125]
+                instruction = result["next_instruction"][:200]
+                self._ai_dispatch_message(
+                    f"{summary}\\n\\nNEXT STEP\\n{instruction}\\n\\n"
+                    f"Reviewable targets found: {len(proposals)} unique "
+                    f"controls · analysis {requests_made}/{max_requests}. "
+                    "Local recording continues independently. Press Capture current screen "
+                    "after changing the visible game state to request another still analysis. "
+                    "Suggestions remain unsaved until you review and press Save calibration."
+                )
+                time.sleep(0.25)
         except GeminiCalibrationError as exc:
             error = str(exc)
         except Exception as exc:  # noqa: BLE001
