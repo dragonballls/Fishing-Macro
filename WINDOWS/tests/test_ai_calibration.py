@@ -74,18 +74,18 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
         self.assertEqual(result["proposals"][0]["key"], "bar_search")
         self.assertEqual(result["proposals"][0]["coords"], [0.04, 0.39, 0.96, 0.95])
 
-    def test_strict_confidence_gate_rejects_uncertain_targets(self):
+    def test_review_floor_rejects_very_uncertain_targets_but_shows_candidates(self):
         base = {
             "screen_state": "interact_prompt",
             "summary": "Prompt visible",
             "next_instruction": "Review the visible prompt",
             "regions": [{
                 "key": "center", "kind": "dot", "coords": [500, 500],
-                "confidence": 0.87, "evidence": "Mostly clear",
+                "confidence": 0.67, "evidence": "Mostly clear",
             }],
         }
         self.assertEqual(validate_response(base)["proposals"], [])
-        base["regions"][0]["confidence"] = 0.90
+        base["regions"][0]["confidence"] = 0.70
         self.assertEqual(len(validate_response(base)["proposals"]), 1)
 
     def test_rejects_low_confidence_wrong_state_and_wrong_kind(self):
@@ -143,6 +143,17 @@ class GeminiCoordinateValidationTests(unittest.TestCase):
         third[20:100, 30:175, :] = 255
         self.assertFalse(screen_changed(first, second))
         self.assertTrue(screen_changed(first, third))
+
+    @unittest.skipUnless(__import__("importlib").util.find_spec("numpy") and
+                         __import__("importlib").util.find_spec("cv2"),
+                         "requires OpenCV and NumPy")
+    def test_scene_change_detects_smaller_high_contrast_ui_transition(self):
+        import numpy as np
+        first = np.zeros((120, 200, 3), dtype=np.uint8)
+        second = first.copy()
+        # A localized prompt can be only about 3% of the visible client.
+        second[20:34, 40:90, :] = 255
+        self.assertTrue(screen_changed(first, second))
 
     @unittest.skipUnless(__import__("importlib").util.find_spec("PIL") and
                          __import__("importlib").util.find_spec("numpy"),

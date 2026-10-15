@@ -117,7 +117,7 @@ have their own credential-store entries. Keys are never shared across providers.
 After you start, the app captures the actual Roblox client window in memory and
 compares it with the bundled calibration reference pictures. A small notice
 near the top-right, inset farther from the edge, tells you which game screen to
-show next. Follow the instruction; when the requested UI is visible, use
+show next. The live monitor samples the actual Roblox client window and submits fresh screenshots when meaningful screen changes are detected or when you press **Capture current screen**. Screenshots stay in memory; the app does not save video recordings. Follow the instruction; when the requested UI is visible, use
 **Capture current screen** to request an additional analysis. This is sequential,
 screen-guided calibration: hidden buttons cannot be safely located from a
 screenshot that does not show them, so the app asks you to open the matching
@@ -130,8 +130,7 @@ while Roblox is open. The fallback does not run unless the cloud request reports
 a quota/credit error.
 
 The app refuses to upload a full-monitor fallback if it cannot identify the
-Roblox client, masks its own notification area before image analysis, rejects
-low-confidence or invalid coordinates, and ignores proposals that overlap the
+Roblox client, masks its own notification area before image analysis, filters suggestions below the 68% review floor, rejects invalid coordinates, and ignores proposals that overlap the
 masked area. Screenshots are not written to disk by this feature. Cloud
 providers receive the game-window screenshot and bundled calibration reference
 sheet, so review the selected provider's data handling, usage limits and billing

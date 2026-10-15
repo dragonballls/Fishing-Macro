@@ -25,7 +25,8 @@ LOCAL_MODEL = "qwen2.5vl:3b"
 LOCAL_ENDPOINT = "http://127.0.0.1:11434/v1/chat/completions"
 LOCAL_DOWNLOAD_URL = "https://ollama.com/download"
 LOCAL_MODEL_URL = "https://ollama.com/library/qwen2.5vl"
-MIN_CONFIDENCE = 0.88
+# Proposals remain provisional; saving calibration always requires human review.
+MIN_CONFIDENCE = 0.68
 
 # Every configured service below accepts image input at its documented endpoint.
 # Users can override the model in the dialog; keys remain isolated per provider.
@@ -232,9 +233,9 @@ def frame_change_score(first_bgr, second_bgr) -> tuple[float, float]:
 
 
 def screen_changed(first_bgr, second_bgr) -> bool:
-    """Ignore tiny animation noise while noticing menu/minigame transitions."""
+    """Ignore minor animation noise while detecting meaningful UI transitions."""
     mean_diff, changed_fraction = frame_change_score(first_bgr, second_bgr)
-    return (mean_diff >= 9.0 and changed_fraction >= 0.025) or changed_fraction >= 0.09
+    return (mean_diff >= 7.0 and changed_fraction >= 0.02) or changed_fraction >= 0.09
 
 
 def _image_bytes(frame_bgr, max_edge: int = 1600) -> bytes:

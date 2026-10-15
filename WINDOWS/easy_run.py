@@ -1844,7 +1844,7 @@ class Calibrator(ctk.CTkToplevel):
         )
         self._ai_toast_title.pack(anchor="w", padx=14, pady=(12, 3))
         self._ai_toast_label = ctk.CTkLabel(
-            outer, text="Starting screenshot monitor…", text_color=TEXT,
+            outer, text="Live monitor starting: sampling the Roblox client window…", text_color=TEXT,
             justify="left", anchor="nw", wraplength=382,
             font=ctk.CTkFont(size=11),
         )
@@ -1963,9 +1963,8 @@ class Calibrator(ctk.CTkToplevel):
         self._ai_last_win = None
         self._ai_make_toast()
         self._ai_toast_message(
-            f"{provider} calibration is starting. Follow each NEXT STEP prompt. "
-            "Press Capture current screen after opening the requested game UI. "
-            "Nothing is saved until you review it."
+            f"{provider} calibration is starting. Live capture is active: the app samples the actual Roblox client window and analyzes a fresh screenshot when the view changes or you press Capture current screen. "
+            "These are in-memory screenshots, not a video recording saved to disk. Follow each NEXT STEP prompt. Nothing is saved to calibration until you review it and press Save calibration."
         )
         try:
             self.master_app.withdraw()
@@ -2124,7 +2123,7 @@ class Calibrator(ctk.CTkToplevel):
                     instruction = result["next_instruction"][:200]
                     self._ai_dispatch_message(
                         f"{summary}\n\nNEXT STEP\n{instruction}\n\n"
-                        f"High-confidence targets found: {len(proposals)} unique "
+                        f"Reviewable targets found: {len(proposals)} unique "
                         f"controls · analysis {requests_made}/{max_requests}. "
                         "Use Capture current screen after changing the visible game state. "
                         "Suggestions remain unsaved until you review and press Save calibration."
@@ -2211,11 +2210,19 @@ class Calibrator(ctk.CTkToplevel):
                 "AI suggestions are overlaid for review. Select each affected control, check the reference and position, then click Save calibration. No config file was written.",
                 SUCCESS,
             )
-            result_line = f"Finished: {len(proposals)} unique control(s) suggested."
+            result_line = f"Finished: {len(proposals)} unique control(s) suggested for review."
+            confidence_summary = ", ".join(
+                f"{key} {proposal['confidence']:.0%}"
+                for key, proposal in list(proposals.items())[:5]
+            )
+            result_line += (
+                f"\nModel-reported confidence (heuristic, not a probability): {confidence_summary}."
+                "\nVerify every overlay against the visible game UI. Nothing is saved until you press Save calibration."
+            )
         else:
             if last_frame is not None and last_win is not None:
                 self._fit()
-            result_line = "No safe, high-confidence controls were accepted. Existing calibration was left unchanged."
+            result_line = "No candidates passed the 68% review floor plus visibility and geometry checks. Existing calibration was left unchanged."
         if error:
             result_line += "\n" + error
         result_line += f"\n{self._ai_provider} analyses used: {request_count}. Review suggestions and press Save calibration to keep them."
