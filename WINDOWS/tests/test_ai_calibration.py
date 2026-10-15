@@ -484,5 +484,39 @@ class LocalVideoRecorderTests(unittest.TestCase):
         self.assertTrue(created["writer"].released)
         self.assertIsNone(recorder._writer)
 
+
+    @unittest.skipUnless(
+        __import__("importlib").util.find_spec("numpy") and
+        __import__("importlib").util.find_spec("cv2"),
+        "requires OpenCV and NumPy",
+    )
+    def test_real_encoder_produces_a_readable_local_recording(self):
+        import tempfile
+        from pathlib import Path
+        import cv2
+        import numpy as np
+
+        frame = np.zeros((96, 160, 3), dtype=np.uint8)
+        frame[20:70, 30:130, :] = 220
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = ScreenVideoRecorder(output_dir=tmp, fps=5.0)
+            path = recorder.start(frame)
+            for _ in range(4):
+                recorder.write(frame)
+            finalized = recorder.close()
+
+            self.assertEqual(finalized, path)
+            self.assertTrue(Path(path).is_file())
+            self.assertGreater(Path(path).stat().st_size, 0)
+
+            capture = cv2.VideoCapture(str(path))
+            try:
+                self.assertTrue(capture.isOpened(), "recorded file did not reopen")
+                ok, decoded = capture.read()
+                self.assertTrue(ok, "recorded file did not decode a frame")
+                self.assertEqual(tuple(decoded.shape[:2]), (96, 160))
+            finally:
+                capture.release()
+
 if __name__ == "__main__":
     unittest.main()
